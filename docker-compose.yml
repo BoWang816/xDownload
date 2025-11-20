@@ -1,0 +1,37 @@
+version: "3.9"
+
+services:
+  twitter-bookmarks:
+    build: .
+    environment:
+      TWITTER_USERNAME: ${TWITTER_USERNAME}
+      TWITTER_PASSWORD: ${TWITTER_PASSWORD}
+      TWITTER_EMAIL: ${TWITTER_EMAIL:-}
+      DOWNLOAD_DIR: /app/downloads
+      HISTORY_FILE: /app/state/download_history.json
+    volumes:
+      - ./downloads:/app/downloads
+      - ./state:/app/state
+    command: >
+      download-bookmarks
+      --limit ${BOOKMARK_LIMIT-0}
+      --scroll-timeout ${SCROLL_TIMEOUT-2.5}
+
+  dashboard:
+    build: .
+    environment:
+      TWITTER_USERNAME: ${TWITTER_USERNAME}
+      TWITTER_PASSWORD: ${TWITTER_PASSWORD}
+      TWITTER_EMAIL: ${TWITTER_EMAIL:-}
+      DOWNLOAD_DIR: /app/downloads
+      HISTORY_FILE: /app/state/download_history.json
+    volumes:
+      - ./downloads:/app/downloads
+      - ./state:/app/state
+    ports:
+      - "8080:8080"
+    command: >
+      serve-dashboard
+      --host 0.0.0.0
+      --port 8080
+
