@@ -14,6 +14,7 @@ from .config import Settings
 from .dashboard import create_dashboard_app
 from .downloader import download_videos
 from .login import ensure_logged_in, storage_exists
+from .web_app import create_web_app
 
 
 app = typer.Typer(help="Twitter 书签视频下载工具")
@@ -22,16 +23,16 @@ console = Console()
 
 @app.command("download-bookmarks")
 def download_bookmarks(
-    limit: Optional[int] = typer.Option(None, help="最多抓取推文数量，0 表示无限制"),
-    headless: Optional[bool] = typer.Option(None, help="是否无头运行浏览器"),
+    limit: int = typer.Option(0, help="最多抓取推文数量，0 表示无限制"),
+    headless: bool = typer.Option(True, "--headless/--no-headless", help="是否无头运行浏览器"),
     storage_state: Optional[Path] = typer.Option(None, help="登录状态文件"),
     download_dir: Optional[Path] = typer.Option(None, help="视频保存目录"),
     scroll_timeout: Optional[float] = typer.Option(None, help="滚动等待秒数"),
     history_file: Optional[Path] = typer.Option(None, help="下载历史记录文件"),
-    skip_existing: Optional[bool] = typer.Option(None, help="跳过已下载的书签"),
+    skip_existing: bool = typer.Option(True, "--skip-existing/--no-skip-existing", help="跳过已下载的书签"),
     max_retries: Optional[int] = typer.Option(None, help="单条下载最大重试次数"),
     retry_delay: Optional[float] = typer.Option(None, help="下载重试间隔秒数"),
-    watch: Optional[bool] = typer.Option(None, help="持续监测书签新增内容"),
+    watch: bool = typer.Option(False, "--watch/--no-watch", help="持续监测书签新增内容"),
     watch_interval: Optional[float] = typer.Option(None, help="监测模式下每轮间隔秒数"),
 ) -> None:
     """
@@ -39,18 +40,14 @@ def download_bookmarks(
     """
     settings = Settings.from_env()
 
-    # CLI 选项优先于 .env
-    limit = settings.limit if limit is None else limit
-    headless = settings.headless if headless is None else headless
-    storage_state = settings.storage_state if storage_state is None else storage_state
-    download_dir = settings.download_dir if download_dir is None else download_dir
-    scroll_timeout = settings.scroll_timeout if scroll_timeout is None else scroll_timeout
-    history_file = settings.history_file if history_file is None else history_file
-    skip_existing = settings.skip_existing if skip_existing is None else skip_existing
-    max_retries = settings.max_retries if max_retries is None else max_retries
-    retry_delay = settings.retry_delay if retry_delay is None else retry_delay
-    watch = settings.watch if watch is None else watch
-    watch_interval = settings.watch_interval if watch_interval is None else watch_interval
+    # CLI 选项优先于 .env，使用默认值
+    storage_state = storage_state or settings.storage_state
+    download_dir = download_dir or settings.download_dir
+    scroll_timeout = scroll_timeout if scroll_timeout is not None else settings.scroll_timeout
+    history_file = history_file or settings.history_file
+    max_retries = max_retries if max_retries is not None else settings.max_retries
+    retry_delay = retry_delay if retry_delay is not None else settings.retry_delay
+    watch_interval = watch_interval if watch_interval is not None else settings.watch_interval
 
     download_dir.mkdir(parents=True, exist_ok=True)
     history_file.parent.mkdir(parents=True, exist_ok=True)
@@ -115,6 +112,19 @@ def serve_dashboard(
     """
     settings = Settings.from_env()
     fastapi_app = create_dashboard_app(settings)
+    uvicorn.run(fastapi_app, host=host, port=port, log_level="info")
+
+
+@app.command("serve-web")
+def serve_web(
+    host: str = typer.Option("0.0.0.0", help="监听地址"),
+    port: int = typer.Option(8000, help="监听端口"),
+) -> None:
+    """
+    运行 Web 应用，提供登录、浏览书签、选择下载的完整界面。
+    """
+    settings = Settings.from_env()
+    fastapi_app = create_web_app(settings)
     uvicorn.run(fastapi_app, host=host, port=port, log_level="info")
 
 

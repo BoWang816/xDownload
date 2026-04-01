@@ -1,28 +1,64 @@
 version: "3.9"
 
 services:
-  twitter-bookmarks:
+  # Web 应用（推荐使用）
+  web:
     build: .
+    container_name: twitter-bookmarks-web
+    environment:
+      # 可选：在这里配置账号信息，或在 Web 界面输入
+      TWITTER_USERNAME: ${TWITTER_USERNAME:-}
+      TWITTER_PASSWORD: ${TWITTER_PASSWORD:-}
+      TWITTER_EMAIL: ${TWITTER_EMAIL:-}
+      DOWNLOAD_DIR: /app/downloads
+      STORAGE_STATE_FILE: /app/state/storage_state.json
+      HISTORY_FILE: /app/state/download_history.json
+      HEADLESS: "false"
+    volumes:
+      - ./downloads:/app/downloads
+      - ./state:/app/state
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+    command: python run_web.py
+
+  # 命令行批量下载
+  downloader:
+    build: .
+    container_name: twitter-bookmarks-downloader
     environment:
       TWITTER_USERNAME: ${TWITTER_USERNAME}
       TWITTER_PASSWORD: ${TWITTER_PASSWORD}
       TWITTER_EMAIL: ${TWITTER_EMAIL:-}
       DOWNLOAD_DIR: /app/downloads
+      STORAGE_STATE_FILE: /app/state/storage_state.json
       HISTORY_FILE: /app/state/download_history.json
+      BOOKMARK_LIMIT: ${BOOKMARK_LIMIT:-0}
+      SCROLL_TIMEOUT: ${SCROLL_TIMEOUT:-2.5}
+      WATCH_MODE: ${WATCH_MODE:-false}
+      WATCH_INTERVAL: ${WATCH_INTERVAL:-120}
+      HEADLESS: "true"
     volumes:
       - ./downloads:/app/downloads
       - ./state:/app/state
+    restart: unless-stopped
+    profiles:
+      - cli
     command: >
-      download-bookmarks
-      --limit ${BOOKMARK_LIMIT-0}
-      --scroll-timeout ${SCROLL_TIMEOUT-2.5}
+      python -c "
+      import sys;
+      sys.path.insert(0, 'src');
+      from twitter_bookmarks_downloader.cli import download_bookmarks;
+      download_bookmarks()
+      "
 
+  # 仪表盘
   dashboard:
     build: .
+    container_name: twitter-bookmarks-dashboard
     environment:
-      TWITTER_USERNAME: ${TWITTER_USERNAME}
-      TWITTER_PASSWORD: ${TWITTER_PASSWORD}
-      TWITTER_EMAIL: ${TWITTER_EMAIL:-}
+      TWITTER_USERNAME: ${TWITTER_USERNAME:-}
+      TWITTER_PASSWORD: ${TWITTER_PASSWORD:-}
       DOWNLOAD_DIR: /app/downloads
       HISTORY_FILE: /app/state/download_history.json
     volumes:
@@ -30,8 +66,14 @@ services:
       - ./state:/app/state
     ports:
       - "8080:8080"
+    restart: unless-stopped
+    profiles:
+      - dashboard
     command: >
-      serve-dashboard
-      --host 0.0.0.0
-      --port 8080
+      python -c "
+      import sys;
+      sys.path.insert(0, 'src');
+      from twitter_bookmarks_downloader.cli import serve_dashboard;
+      serve_dashboard()
+      "
 

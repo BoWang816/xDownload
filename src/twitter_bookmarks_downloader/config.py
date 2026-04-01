@@ -44,8 +44,9 @@ class Settings:
         watch = os.getenv("WATCH_MODE", "false").lower() in {"1", "true", "yes"}
         watch_interval = float(os.getenv("WATCH_INTERVAL", "120"))
 
-        if not username or not password:
-            raise RuntimeError("需要在环境变量中提供 TWITTER_USERNAME 与 TWITTER_PASSWORD")
+        # Web 应用模式下允许不提供用户名密码（在界面输入）
+        # if not username or not password:
+        #     raise RuntimeError("需要在环境变量中提供 TWITTER_USERNAME 与 TWITTER_PASSWORD")
 
         download_dir.mkdir(parents=True, exist_ok=True)
         history_file.parent.mkdir(parents=True, exist_ok=True)
