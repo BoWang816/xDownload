@@ -151,13 +151,67 @@ def create_web_app(settings: Settings) -> FastAPI:
             # 执行登录流程
             print("[LOGIN] 开始执行登录流程...")
             await app_state.page.goto("https://twitter.com/i/flow/login", wait_until="networkidle")
+            await asyncio.sleep(3)
             
-            # 输入用户名
-            print("[LOGIN] 输入用户名...")
-            await app_state.page.fill('input[name="text"]', request.username)
-            await app_state.page.click('div[role="button"][data-testid="LoginForm_Login_Button"]')
-            await asyncio.sleep(2)
-
+            # 保存登录页面截图
+            try:
+                await app_state.page.screenshot(path="debug_login_page.png")
+                print("[LOGIN] 已保存登录页面截图: debug_login_page.png")
+            except:
+                pass
+            
+            # 输入用户名 - 尝试多种选择器
+            print("[LOGIN] 等待用户名输入框...")
+            username_input = None
+            selectors = [
+                'input[name="text"]',
+                'input[autocomplete="username"]',
+                'input[type="text"]',
+                'input[name="session[username_or_email]"]'
+            ]
+            
+            for selector in selectors:
+                try:
+                    print(f"[LOGIN] 尝试选择器: {selector}")
+                    await app_state.page.wait_for_selector(selector, timeout=5000)
+                    username_input = selector
+                    print(f"[LOGIN] ✓ 找到用户名输入框: {selector}")
+                    break
+                except Exception as e:
+                    print(f"[LOGIN] 选择器 {selector} 失败: {e}")
+                    continue
+            
+            if not username_input:
+                raise Exception("找不到用户名输入框，请检查 Twitter 登录页面是否改版")
+            
+            print(f"[LOGIN] 输入用户名: {request.username}")
+            await app_state.page.fill(username_input, request.username)
+            
+            # 点击下一步按钮
+            print("[LOGIN] 点击下一步...")
+            next_button_selectors = [
+                'div[role="button"][data-testid="LoginForm_Login_Button"]',
+                'button:has-text("Next")',
+                'div[role="button"]:has-text("Next")',
+                'button[type="button"]'
+            ]
+            
+            for selector in next_button_selectors:
+                try:
+                    await app_state.page.click(selector, timeout=3000)
+                    print(f"[LOGIN] ✓ 点击了按钮: {selector}")
+                    break
+                except:
+                    continue
+            
+            await asyncio.sleep(3)
+            
+            # 保存中间页面截图
+            try:
+                await app_state.page.screenshot(path="debug_login_step2.png")
+                print("[LOGIN] 已保存第二步截图: debug_login_step2.png")
+            except:
+                pass
             
             # 处理可能的用户名确认
             print("[LOGIN] 检查是否需要邮箱验证...")
@@ -167,15 +221,52 @@ def create_web_app(settings: Settings) -> FastAPI:
                 print(f"[LOGIN] 需要邮箱验证，输入: {value}")
                 await app_state.page.fill('input[name="text"]', value)
                 await app_state.page.click('div[role="button"][data-testid="ocfEnterTextNextButton"]')
-                await asyncio.sleep(2)
+                await asyncio.sleep(3)
             except Exception as e:
-                print(f"[LOGIN] 无需邮箱验证: {e}")
-                pass
+                print(f"[LOGIN] 无需邮箱验证")
             
             # 输入密码
+            print("[LOGIN] 等待密码输入框...")
+            password_input = None
+            password_selectors = [
+                'input[name="password"]',
+                'input[type="password"]',
+                'input[autocomplete="current-password"]'
+            ]
+            
+            for selector in password_selectors:
+                try:
+                    print(f"[LOGIN] 尝试密码选择器: {selector}")
+                    await app_state.page.wait_for_selector(selector, timeout=5000)
+                    password_input = selector
+                    print(f"[LOGIN] ✓ 找到密码输入框: {selector}")
+                    break
+                except Exception as e:
+                    print(f"[LOGIN] 密码选择器 {selector} 失败: {e}")
+                    continue
+            
+            if not password_input:
+                raise Exception("找不到密码输入框")
+            
             print("[LOGIN] 输入密码...")
-            await app_state.page.fill('input[name="password"]', request.password)
-            await app_state.page.click('div[data-testid="LoginForm_Login_Button"]')
+            await app_state.page.fill(password_input, request.password)
+            
+            # 点击登录按钮
+            print("[LOGIN] 点击登录按钮...")
+            login_button_selectors = [
+                'div[data-testid="LoginForm_Login_Button"]',
+                'button:has-text("Log in")',
+                'div[role="button"]:has-text("Log in")',
+                'button[type="button"]'
+            ]
+            
+            for selector in login_button_selectors:
+                try:
+                    await app_state.page.click(selector, timeout=3000)
+                    print(f"[LOGIN] ✓ 点击了登录按钮: {selector}")
+                    break
+                except:
+                    continue
             
             # 等待登录完成
             print("[LOGIN] 等待登录完成...")
