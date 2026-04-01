@@ -137,6 +137,23 @@ def create_web_app(settings: Settings) -> FastAPI:
                 # 打印所有 cookie 名称用于调试
                 print(f"[LOGIN] 所有 cookie 名称: {list(app_state.cookies.keys())}")
                 
+                # 检查是否真的登录成功（必须有 auth_token）
+                if 'auth_token' not in app_state.cookies:
+                    print("[LOGIN] ✗ 登录状态已失效，缺少 auth_token")
+                    # 删除失效的登录状态文件
+                    if storage_state_path.exists():
+                        storage_state_path.unlink()
+                        print(f"[LOGIN] 已删除失效的登录状态文件: {storage_state_path}")
+                    
+                    return JSONResponse(
+                        status_code=401,
+                        content={
+                            "success": False, 
+                            "message": "登录状态已失效，请重新输入用户名和密码登录",
+                            "need_relogin": True
+                        }
+                    )
+                
                 app_state.is_logged_in = True
                 
                 # 保存截图确认
@@ -932,7 +949,15 @@ WEB_UI_HTML = """<!DOCTYPE html>
                     document.getElementById('bookmarksSection').classList.remove('hidden');
                     loadBookmarks();
                 } else {
-                    showMessage(data.message || '登录失败', 'error');
+                    // 检查是否需要重新登录
+                    if (data.need_relogin) {
+                        showMessage('⚠️ ' + data.message, 'error');
+                        // 清空密码框，让用户重新输入
+                        document.getElementById('password').value = '';
+                        document.getElementById('password').focus();
+                    } else {
+                        showMessage(data.message || '登录失败', 'error');
+                    }
                 }
             } catch (error) {
                 showMessage('登录失败: ' + error.message, 'error');
