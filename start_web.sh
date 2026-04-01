@@ -43,11 +43,28 @@ else
     exit 1
 fi
 
+# 检查 python3-venv 是否安装
+if ! $PYTHON_CMD -m venv --help &> /dev/null; then
+    echo ""
+    echo "✗ 错误: python3-venv 未安装"
+    echo "请运行以下命令安装:"
+    echo "  sudo apt install python3-venv"
+    exit 1
+fi
+
 # 检查虚拟环境
 if [ ! -d ".venv" ]; then
     echo ""
     echo "未找到虚拟环境，正在创建..."
     $PYTHON_CMD -m venv .venv
+    
+    # 验证虚拟环境是否创建成功
+    if [ ! -f ".venv/bin/activate" ]; then
+        echo "✗ 虚拟环境创建失败"
+        echo "请检查 python3-venv 是否正确安装"
+        exit 1
+    fi
+    
     echo "✓ 虚拟环境创建完成"
 fi
 
