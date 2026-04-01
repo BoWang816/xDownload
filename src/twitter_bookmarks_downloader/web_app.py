@@ -104,9 +104,22 @@ def create_web_app(settings: Settings) -> FastAPI:
             # 检查是否已登录
             print("[LOGIN] 检查是否已登录...")
             await app_state.page.goto("https://twitter.com/home", wait_until="domcontentloaded")
-            if "login" not in app_state.page.url:
+            await asyncio.sleep(2)
+            
+            current_url = app_state.page.url
+            print(f"[LOGIN] 当前 URL: {current_url}")
+            
+            if "login" not in current_url and "home" in current_url:
                 print("[LOGIN] ✓ 使用已保存的登录状态成功")
                 app_state.is_logged_in = True
+                
+                # 保存截图确认
+                try:
+                    await app_state.page.screenshot(path="debug_login_success.png")
+                    print("[LOGIN] 已保存登录成功截图")
+                except:
+                    pass
+                
                 return {"success": True, "message": "使用已保存的登录状态"}
             
             # 执行登录流程
@@ -142,10 +155,20 @@ def create_web_app(settings: Settings) -> FastAPI:
             print("[LOGIN] 等待登录完成...")
             await app_state.page.wait_for_url("https://twitter.com/home*", timeout=30000)
             
+            # 额外等待确保页面加载完成
+            await asyncio.sleep(2)
+            
             # 保存登录状态
             print(f"[LOGIN] 保存登录状态到: {storage_state_path}")
             await app_state.context.storage_state(path=str(storage_state_path))
             app_state.is_logged_in = True
+            
+            # 保存截图确认
+            try:
+                await app_state.page.screenshot(path="debug_login_new.png")
+                print("[LOGIN] 已保存新登录截图")
+            except:
+                pass
             
             print("[LOGIN] ✓ 登录成功！")
             return {"success": True, "message": "登录成功"}
@@ -177,11 +200,57 @@ def create_web_app(settings: Settings) -> FastAPI:
             print("[BOOKMARKS] 等待推文加载...")
             await asyncio.sleep(3)
             
+            # 检查当前 URL
+            current_url = app_state.page.url
+            print(f"[BOOKMARKS] 当前 URL: {current_url}")
+            
+            # 如果被重定向到登录页，说明登录状态失效
+            if "login" in current_url:
+                print("[BOOKMARKS] ✗ 登录状态已失效，请重新登录")
+                app_state.is_logged_in = False
+                raise HTTPException(status_code=401, detail="登录状态已失效，请重新登录")
+            
+            # 保存截图用于调试
+            try:
+                screenshot_path = "debug_bookmarks.png"
+                await app_state.page.screenshot(path=screenshot_path)
+                print(f"[BOOKMARKS] 已保存截图到: {screenshot_path}")
+            except Exception as e:
+                print(f"[BOOKMARKS] 截图失败: {e}")
+            
+            # 获取页面标题
+            try:
+                title = await app_state.page.title()
+                print(f"[BOOKMARKS] 页面标题: {title}")
+            except Exception as e:
+                print(f"[BOOKMARKS] 获取标题失败: {e}")
+            
             # 等待至少有一个推文出现
             try:
                 await app_state.page.wait_for_selector('article[data-testid="tweet"]', timeout=10000)
+                print("[BOOKMARKS] ✓ 找到推文元素")
             except Exception as e:
                 print(f"[BOOKMARKS] ⚠️  未找到推文元素: {e}")
+                
+                # 尝试查找其他可能的选择器
+                print("[BOOKMARKS] 尝试查找其他元素...")
+                try:
+                    # 检查是否有 "暂无书签" 的提示
+                    empty_state = await app_state.page.query_selector('text="You haven\'t added any posts to your Bookmarks yet"')
+                    if empty_state:
+                        print("[BOOKMARKS] ℹ️  书签为空")
+                        return {"success": True, "bookmarks": []}
+                    
+                    # 检查是否有其他文章元素
+                    articles = await app_state.page.query_selector_all('article')
+                    print(f"[BOOKMARKS] 找到 {len(articles)} 个 article 元素")
+                    
+                    # 打印页面的部分 HTML 用于调试
+                    html_sample = await app_state.page.evaluate("() => document.body.innerHTML.substring(0, 500)")
+                    print(f"[BOOKMARKS] 页面 HTML 示例: {html_sample}")
+                    
+                except Exception as debug_error:
+                    print(f"[BOOKMARKS] 调试信息获取失败: {debug_error}")
             
             bookmarks = []
             seen_ids = set()
