@@ -15,7 +15,7 @@ app = typer.Typer(help="Twitter 书签视频下载工具")
 @app.command("serve-web")
 def serve_web(
     host: Annotated[str, typer.Option(help="监听地址")] = "0.0.0.0",
-    port: Annotated[int, typer.Option(help="监听端口")] = 8000,
+    port: Annotated[int, typer.Option(help="监听端口")] = 10000,
 ) -> None:
     """
     运行 Web 应用，提供登录、浏览书签、选择下载的完整界面。

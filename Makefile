@@ -55,7 +55,7 @@ docker-build:
 docker-up:
 	@echo "🚀 启动 Docker 容器..."
 	docker compose up -d web
-	@echo "✅ 容器已启动！访问 http://localhost:8000"
+	@echo "✅ 容器已启动！访问 http://localhost:10000"
 
 docker-down:
 	@echo "🛑 停止 Docker 容器..."

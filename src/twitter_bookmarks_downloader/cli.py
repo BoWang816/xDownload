@@ -118,7 +118,7 @@ def serve_dashboard(
 @app.command("serve-web")
 def serve_web(
     host: str = typer.Option("0.0.0.0", help="监听地址"),
-    port: int = typer.Option(8000, help="监听端口"),
+    port: int = typer.Option(10000, help="监听端口"),
 ) -> None:
     """
     运行 Web 应用，提供登录、浏览书签、选择下载的完整界面。

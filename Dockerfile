@@ -38,7 +38,7 @@ COPY run_web.py .
 RUN mkdir -p /app/downloads /app/state
 
 # 暴露端口
-EXPOSE 8000
+EXPOSE 10000
 
 # 默认启动 Web 应用
 CMD ["python", "run_web.py"]

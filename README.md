@@ -78,7 +78,7 @@ cd twitter-bookmarks-downloader
 chmod +x start_web.sh
 ./start_web.sh
 
-# 3. 打开浏览器访问 http://localhost:8000
+# 3. 打开浏览器访问 http://localhost:10000
 ```
 
 **使用流程：**
@@ -128,7 +128,7 @@ docker compose up web
 ```
 
 **访问应用：**
-- Web 应用：http://localhost:8000
+- Web 应用：http://localhost:10000
 - 仪表盘：http://localhost:8080
 
 ---
@@ -204,7 +204,7 @@ python run_web.py
 
 **选项：**
 - `--host TEXT` - 监听地址（默认：0.0.0.0）
-- `--port INTEGER` - 监听端口（默认：8000）
+- `--port INTEGER` - 监听端口（默认：10000）
 
 #### 命令行下载
 
@@ -463,7 +463,7 @@ docker compose logs web > logs.txt
 - **基础镜像**: python:3.11-slim
 - **浏览器**: Chromium（比 Firefox 减少 40% 大小）
 - **镜像大小**: ~800MB
-- **暴露端口**: 8000（Web）、8080（仪表盘）
+- **暴露端口**: 10000（Web）、8080（仪表盘）
 - **工作目录**: /app
 - **数据卷**: /app/downloads、/app/state
 
@@ -675,10 +675,10 @@ docker compose build --no-cache web
 
 ```bash
 # 查找占用端口的进程
-lsof -i :8000
+lsof -i :10000
 
 # 修改端口
-docker compose up web -p 3000:8000
+docker compose up web -p 3000:10000
 ```
 
 #### 权限问题
