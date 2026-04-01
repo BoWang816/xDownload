@@ -19,8 +19,7 @@ from pydantic import BaseModel
 from yt_dlp import YoutubeDL
 import httpx
 
-from twitter.account import Account
-from twitter.scraper import Scraper
+from twikit import Client
 
 from .config import Settings
 from .history import load_history, save_history
@@ -29,12 +28,10 @@ from .history import load_history, save_history
 # 全局状态管理
 class AppState:
     def __init__(self):
-        self.account: Optional[Account] = None
-        self.scraper: Optional[Scraper] = None
+        self.client: Optional[Client] = None
         self.is_logged_in = False
         self.bookmarks: List[Dict[str, Any]] = []
         self.download_tasks: Dict[str, Dict[str, Any]] = {}
-        self.cookies: Dict[str, str] = {}  # 存储 Twitter cookies
 
 
 app_state = AppState()
@@ -74,35 +71,32 @@ def create_web_app(settings: Settings) -> FastAPI:
 
     @app.post("/api/login")
     async def login(request: LoginRequest):
-        """使用 twitter-api-client 库处理用户登录"""
+        """使用 twikit 库处理用户登录"""
         print(f"[LOGIN] 开始登录流程，用户名: {request.username}")
         try:
             storage_state_path = settings.storage_state
             
-            # 检查是否有已保存的登录状态（cookies）
+            # 初始化 client
+            if not app_state.client:
+                app_state.client = Client('zh-CN')
+            
+            # 检查是否有已保存的 cookies
             if storage_state_path.exists():
                 print(f"[LOGIN] 发现已保存的登录状态: {storage_state_path}")
                 try:
-                    # 加载保存的 cookies
-                    with open(storage_state_path, 'r') as f:
-                        storage_data = json.load(f)
-                        cookies_dict = storage_data.get('cookies', {})
-                        
-                        # 检查是否有必要的 cookies
-                        if 'ct0' in cookies_dict and 'auth_token' in cookies_dict:
-                            print(f"[LOGIN] 尝试使用已保存的 cookies 登录...")
-                            
-                            # 使用 cookies 创建 Account
-                            app_state.account = Account(cookies=cookies_dict)
-                            app_state.scraper = Scraper(cookies=cookies_dict)
-                            app_state.cookies = cookies_dict
+                    # 加载 cookies
+                    app_state.client.load_cookies(str(storage_state_path))
+                    
+                    # 验证登录状态
+                    try:
+                        user = await app_state.client.user()
+                        if user:
+                            print(f"[LOGIN] ✓ 使用已保存的登录状态成功，用户: {user.name}")
                             app_state.is_logged_in = True
-                            
-                            print("[LOGIN] ✓ 使用已保存的登录状态成功")
                             return {"success": True, "message": "使用已保存的登录状态"}
-                        else:
-                            print("[LOGIN] 已保存的 cookies 不完整，需要重新登录")
-                            storage_state_path.unlink()
+                    except:
+                        print("[LOGIN] 已保存的登录状态无效，需要重新登录")
+                        storage_state_path.unlink()
                 except Exception as e:
                     print(f"[LOGIN] 加载登录状态失败: {e}")
                     if storage_state_path.exists():
@@ -111,64 +105,22 @@ def create_web_app(settings: Settings) -> FastAPI:
             # 使用用户名密码登录
             print("[LOGIN] 使用用户名和密码登录...")
             
-            # 在后台线程中执行登录（因为 twitter-api-client 是同步的）
-            def do_login():
-                try:
-                    account = Account(
-                        email=request.email or request.username,
-                        username=request.username,
-                        password=request.password
-                    )
-                    return account, None
-                except Exception as e:
-                    return None, str(e)
+            await app_state.client.login(
+                auth_info_1=request.username,
+                auth_info_2=request.email or request.username,
+                password=request.password
+            )
             
-            # 在线程池中执行
-            import concurrent.futures
-            with concurrent.futures.ThreadPoolExecutor() as executor:
-                future = executor.submit(do_login)
-                account, error = future.result(timeout=60)
+            print("[LOGIN] ✓ 登录成功！")
             
-            if error:
-                raise Exception(error)
-            
-            if not account:
-                raise Exception("登录失败，未能创建 Account 对象")
-            
-            app_state.account = account
-            app_state.scraper = Scraper(cookies=account.session.cookies.get_dict())
-            
-            # 提取 cookies
-            cookies_dict = account.session.cookies.get_dict()
-            app_state.cookies = cookies_dict
-            
-            print(f"[LOGIN] ✓ 获取到 {len(cookies_dict)} 个 cookies")
-            for key in ['ct0', 'auth_token']:
-                if key in cookies_dict:
-                    print(f"[LOGIN]   - {key}: {cookies_dict[key][:20]}...")
-            
-            # 保存登录状态
+            # 保存 cookies
             print(f"[LOGIN] 保存登录状态到: {storage_state_path}")
             storage_state_path.parent.mkdir(parents=True, exist_ok=True)
-            
-            storage_data = {
-                "cookies": cookies_dict
-            }
-            
-            with open(storage_state_path, 'w') as f:
-                json.dump(storage_data, f, indent=2)
+            app_state.client.save_cookies(str(storage_state_path))
             
             app_state.is_logged_in = True
-            print("[LOGIN] ✓ 登录成功！")
             return {"success": True, "message": "登录成功"}
         
-        except concurrent.futures.TimeoutError:
-            error_msg = "登录超时，请检查网络连接或稍后再试"
-            print(f"[LOGIN] ✗ {error_msg}")
-            return JSONResponse(
-                status_code=400,
-                content={"success": False, "message": error_msg}
-            )
         except Exception as e:
             error_msg = f"登录失败: {str(e)}"
             print(f"[LOGIN] ✗ {error_msg}")
@@ -181,98 +133,52 @@ def create_web_app(settings: Settings) -> FastAPI:
 
 
     async def fetch_bookmarks_via_api(limit: int = 50) -> List[Dict[str, Any]]:
-        """使用 twitter-api-client 获取书签"""
-        print(f"[API] 使用 twitter-api-client 获取书签，限制: {limit}")
+        """使用 twikit 获取书签"""
+        print(f"[API] 使用 twikit 获取书签，限制: {limit}")
         
-        if not app_state.account:
+        if not app_state.client:
             raise Exception("未登录，请先登录")
         
-        # 在后台线程中执行（因为 twitter-api-client 是同步的）
-        def do_fetch():
-            try:
-                # 获取书签
-                bookmarks_data = app_state.account.bookmarks()
-                return bookmarks_data, None
-            except Exception as e:
-                return None, str(e)
+        # 获取书签
+        bookmarks_result = await app_state.client.get_bookmarks()
         
-        import concurrent.futures
-        with concurrent.futures.ThreadPoolExecutor() as executor:
-            future = executor.submit(do_fetch)
-            bookmarks_data, error = future.result(timeout=60)
-        
-        if error:
-            raise Exception(error)
-        
-        if not bookmarks_data:
-            print("[API] ⚠️  未获取到书签数据")
-            return []
-        
-        # 解析书签数据
         bookmarks = []
-        entries = bookmarks_data.get('data', {}).get('bookmark_timeline_v2', {}).get('timeline', {}).get('instructions', [])
+        count = 0
         
-        for instruction in entries:
-            if instruction.get('type') == 'TimelineAddEntries':
-                for entry in instruction.get('entries', []):
-                    entry_id = entry.get('entryId', '')
-                    
-                    if entry_id.startswith('tweet-'):
-                        content = entry.get('content', {})
-                        item_content = content.get('itemContent', {})
-                        tweet_results = item_content.get('tweet_results', {}).get('result', {})
-                        
-                        if not tweet_results:
-                            continue
-                        
-                        # 处理可能的 tombstone（已删除的推文）
-                        if tweet_results.get('__typename') == 'TweetTombstone':
-                            continue
-                        
-                        legacy = tweet_results.get('legacy', {})
-                        user = tweet_results.get('core', {}).get('user_results', {}).get('result', {}).get('legacy', {})
-                        
-                        tweet_id = legacy.get('id_str', '')
-                        text = legacy.get('full_text', '')
-                        author = user.get('screen_name', 'Unknown')
-                        
-                        # 检查是否有视频
-                        media = legacy.get('extended_entities', {}).get('media', [])
-                        has_video = False
+        for tweet in bookmarks_result:
+            # 检查是否有视频
+            if hasattr(tweet, 'media') and tweet.media:
+                for media in tweet.media:
+                    if media.type in ['video', 'animated_gif']:
+                        # 获取最高质量的视频
                         video_url = None
-                        thumbnail = None
+                        if hasattr(media, 'variants') and media.variants:
+                            max_bitrate = 0
+                            for variant in media.variants:
+                                if hasattr(variant, 'content_type') and variant.content_type == 'video/mp4':
+                                    bitrate = getattr(variant, 'bitrate', 0)
+                                    if bitrate > max_bitrate:
+                                        max_bitrate = bitrate
+                                        video_url = variant.url
                         
-                        for m in media:
-                            if m.get('type') in ['video', 'animated_gif']:
-                                has_video = True
-                                thumbnail = m.get('media_url_https')
-                                # 获取最高质量的视频
-                                variants = m.get('video_info', {}).get('variants', [])
-                                max_bitrate = 0
-                                for variant in variants:
-                                    if variant.get('content_type') == 'video/mp4':
-                                        bitrate = variant.get('bitrate', 0)
-                                        if bitrate > max_bitrate:
-                                            max_bitrate = bitrate
-                                            video_url = variant.get('url')
-                                break
-                        
-                        if has_video and video_url:
+                        if video_url:
                             bookmarks.append({
-                                'id': tweet_id,
-                                'url': f'https://twitter.com/i/status/{tweet_id}',
-                                'text': text[:200] if text else '无文字内容',
-                                'author': author,
+                                'id': tweet.id,
+                                'url': f'https://twitter.com/i/status/{tweet.id}',
+                                'text': tweet.text[:200] if tweet.text else '无文字内容',
+                                'author': tweet.user.screen_name if hasattr(tweet, 'user') else 'Unknown',
                                 'hasVideo': True,
                                 'videoUrl': video_url,
-                                'thumbnail': thumbnail
+                                'thumbnail': media.thumbnail_url if hasattr(media, 'thumbnail_url') else None
                             })
                             
-                            if len(bookmarks) >= limit:
+                            count += 1
+                            if count >= limit:
                                 break
-                
-                if len(bookmarks) >= limit:
-                    break
+                        break
+            
+            if count >= limit:
+                break
         
         print(f"[API] ✓ 解析到 {len(bookmarks)} 条包含视频的书签")
         return bookmarks
@@ -352,7 +258,7 @@ def create_web_app(settings: Settings) -> FastAPI:
         """登出并清除登录状态"""
         print("[LOGOUT] 用户登出")
         app_state.is_logged_in = False
-        app_state.cookies.clear()
+        app_state.client = None
         app_state.bookmarks.clear()
         
         # 删除保存的登录状态
@@ -366,21 +272,19 @@ def create_web_app(settings: Settings) -> FastAPI:
     @app.get("/api/validate_login")
     async def validate_login():
         """验证当前登录状态是否有效"""
-        if not app_state.is_logged_in:
+        if not app_state.is_logged_in or not app_state.client:
             return {"valid": False, "message": "未登录"}
         
-        # 检查 cookies 是否存在
-        auth_keys = ['auth_token', 'auth', 'kdt', 'twid']
-        csrf_keys = ['ct0', 'csrf_token', 'x-csrf-token']
+        try:
+            # 尝试获取用户信息验证登录状态
+            user = await app_state.client.user()
+            if user:
+                return {"valid": True, "message": "登录状态有效"}
+        except:
+            pass
         
-        has_auth = any(key in app_state.cookies for key in auth_keys)
-        has_csrf = any(key in app_state.cookies for key in csrf_keys)
-        
-        if not has_auth or not has_csrf:
-            app_state.is_logged_in = False
-            return {"valid": False, "message": "登录状态已失效"}
-        
-        return {"valid": True, "message": "登录状态有效"}
+        app_state.is_logged_in = False
+        return {"valid": False, "message": "登录状态已失效"}
 
     @app.get("/", response_class=HTMLResponse)
     async def index():
