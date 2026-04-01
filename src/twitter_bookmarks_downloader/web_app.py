@@ -105,41 +105,65 @@ def create_web_app(settings: Settings) -> FastAPI:
             
             # 检查是否已登录
             print("[LOGIN] 检查是否已登录...")
-            await app_state.page.goto("https://twitter.com/home", wait_until="domcontentloaded")
+            # 尝试访问 x.com 或 twitter.com
+            try:
+                await app_state.page.goto("https://x.com/home", wait_until="domcontentloaded")
+            except:
+                await app_state.page.goto("https://twitter.com/home", wait_until="domcontentloaded")
+            
             await asyncio.sleep(2)
             
             current_url = app_state.page.url
             print(f"[LOGIN] 当前 URL: {current_url}")
             
-            if "login" not in current_url and "home" in current_url:
+            if "login" not in current_url and ("home" in current_url or "x.com" in current_url):
                 print("[LOGIN] ✓ 使用已保存的登录状态成功")
                 
-                # 提取 cookies
+                # 提取 cookies - 同时支持 x.com 和 twitter.com
                 print("[LOGIN] 提取 cookies...")
-                cookies = await app_state.context.cookies()
-                print(f"[LOGIN] 获取到 {len(cookies)} 个 cookies")
+                all_cookies = await app_state.context.cookies([
+                    "https://x.com",
+                    "https://twitter.com",
+                    "https://api.x.com",
+                    "https://api.twitter.com"
+                ])
+                print(f"[LOGIN] 获取到 {len(all_cookies)} 个 cookies")
                 
-                for cookie in cookies:
+                for cookie in all_cookies:
                     app_state.cookies[cookie['name']] = cookie['value']
-                    # 打印 cookie 名称（不打印值以保护隐私）
-                    print(f"[LOGIN]   - {cookie['name']}")
+                    # 打印 cookie 名称和域名
+                    print(f"[LOGIN]   - {cookie['name']} (domain: {cookie.get('domain', 'N/A')})")
                 
-                if 'auth_token' in app_state.cookies:
-                    print(f"[LOGIN] ✓ 找到 auth_token: {app_state.cookies['auth_token'][:20]}...")
-                else:
-                    print(f"[LOGIN] ✗ 未找到 auth_token")
-                    
-                if 'ct0' in app_state.cookies:
-                    print(f"[LOGIN] ✓ 找到 ct0 (CSRF token): {app_state.cookies['ct0'][:20]}...")
-                else:
-                    print(f"[LOGIN] ✗ 未找到 ct0")
+                # 检查多种可能的认证 token 名称
+                auth_keys = ['auth_token', 'auth', 'kdt', 'twid']
+                csrf_keys = ['ct0', 'csrf_token', 'x-csrf-token']
+                
+                found_auth = None
+                found_csrf = None
+                
+                for key in auth_keys:
+                    if key in app_state.cookies:
+                        found_auth = key
+                        print(f"[LOGIN] ✓ 找到认证 token: {key} = {app_state.cookies[key][:20]}...")
+                        break
+                
+                for key in csrf_keys:
+                    if key in app_state.cookies:
+                        found_csrf = key
+                        print(f"[LOGIN] ✓ 找到 CSRF token: {key} = {app_state.cookies[key][:20]}...")
+                        break
+                
+                if not found_auth:
+                    print(f"[LOGIN] ✗ 未找到认证 token (尝试了: {auth_keys})")
+                if not found_csrf:
+                    print(f"[LOGIN] ✗ 未找到 CSRF token (尝试了: {csrf_keys})")
                 
                 # 打印所有 cookie 名称用于调试
                 print(f"[LOGIN] 所有 cookie 名称: {list(app_state.cookies.keys())}")
                 
-                # 检查是否真的登录成功（必须有 auth_token）
-                if 'auth_token' not in app_state.cookies:
-                    print("[LOGIN] ✗ 登录状态已失效，缺少 auth_token")
+                # 检查是否真的登录成功
+                if not found_auth:
+                    print("[LOGIN] ✗ 登录状态已失效，缺少认证 token")
                     # 删除失效的登录状态文件
                     if storage_state_path.exists():
                         storage_state_path.unlink()
@@ -167,7 +191,12 @@ def create_web_app(settings: Settings) -> FastAPI:
             
             # 执行登录流程
             print("[LOGIN] 开始执行登录流程...")
-            await app_state.page.goto("https://twitter.com/i/flow/login", wait_until="networkidle")
+            # 尝试 x.com 或 twitter.com
+            try:
+                await app_state.page.goto("https://x.com/i/flow/login", wait_until="networkidle")
+            except:
+                await app_state.page.goto("https://twitter.com/i/flow/login", wait_until="networkidle")
+            
             await asyncio.sleep(3)
             
             # 保存登录页面截图
@@ -287,30 +316,62 @@ def create_web_app(settings: Settings) -> FastAPI:
             
             # 等待登录完成
             print("[LOGIN] 等待登录完成...")
-            await app_state.page.wait_for_url("https://twitter.com/home*", timeout=30000)
+            try:
+                await app_state.page.wait_for_url("*://*/home*", timeout=30000)
+            except:
+                # 可能重定向到 x.com 或 twitter.com
+                pass
+            
+            # 额外等待确保页面加载完成
+            await asyncio.sleep(3)
+            
+            # 检查是否真的到了 home 页面
+            final_url = app_state.page.url
+            print(f"[LOGIN] 登录后 URL: {final_url}")
+            
+            if "login" in final_url:
+                raise Exception("登录失败，仍在登录页面")
             
             # 额外等待确保页面加载完成
             await asyncio.sleep(2)
             
             # 提取 cookies 用于 API 调用
             print("[LOGIN] 提取 cookies...")
-            cookies = await app_state.context.cookies()
-            print(f"[LOGIN] 获取到 {len(cookies)} 个 cookies")
+            all_cookies = await app_state.context.cookies([
+                "https://x.com",
+                "https://twitter.com",
+                "https://api.x.com",
+                "https://api.twitter.com"
+            ])
+            print(f"[LOGIN] 获取到 {len(all_cookies)} 个 cookies")
             
-            for cookie in cookies:
+            for cookie in all_cookies:
                 app_state.cookies[cookie['name']] = cookie['value']
-                print(f"[LOGIN]   - {cookie['name']}")
+                print(f"[LOGIN]   - {cookie['name']} (domain: {cookie.get('domain', 'N/A')})")
             
-            # 打印关键 cookies（用于调试）
-            if 'auth_token' in app_state.cookies:
-                print(f"[LOGIN] ✓ 找到 auth_token: {app_state.cookies['auth_token'][:20]}...")
-            else:
-                print(f"[LOGIN] ✗ 未找到 auth_token")
-                
-            if 'ct0' in app_state.cookies:
-                print(f"[LOGIN] ✓ 找到 ct0 (CSRF token): {app_state.cookies['ct0'][:20]}...")
-            else:
-                print(f"[LOGIN] ✗ 未找到 ct0")
+            # 检查多种可能的认证 token 名称
+            auth_keys = ['auth_token', 'auth', 'kdt', 'twid']
+            csrf_keys = ['ct0', 'csrf_token', 'x-csrf-token']
+            
+            found_auth = None
+            found_csrf = None
+            
+            for key in auth_keys:
+                if key in app_state.cookies:
+                    found_auth = key
+                    print(f"[LOGIN] ✓ 找到认证 token: {key} = {app_state.cookies[key][:20]}...")
+                    break
+            
+            for key in csrf_keys:
+                if key in app_state.cookies:
+                    found_csrf = key
+                    print(f"[LOGIN] ✓ 找到 CSRF token: {key} = {app_state.cookies[key][:20]}...")
+                    break
+            
+            if not found_auth:
+                print(f"[LOGIN] ✗ 未找到认证 token (尝试了: {auth_keys})")
+            if not found_csrf:
+                print(f"[LOGIN] ✗ 未找到 CSRF token (尝试了: {csrf_keys})")
             
             # 打印所有 cookie 名称用于调试
             print(f"[LOGIN] 所有 cookie 名称: {list(app_state.cookies.keys())}")
@@ -343,24 +404,43 @@ def create_web_app(settings: Settings) -> FastAPI:
 
     async def fetch_bookmarks_via_api(limit: int = 50) -> List[Dict[str, Any]]:
         """使用 Twitter API 获取书签"""
-        print(f"[API] 使用 Twitter API 获取书签，限制: {limit}")
+        print(f"[API] 使用 Twitter/X API 获取书签，限制: {limit}")
         print(f"[API] 当前 cookies 数量: {len(app_state.cookies)}")
         print(f"[API] Cookie 名称: {list(app_state.cookies.keys())}")
         
-        if not app_state.cookies.get('auth_token'):
-            print(f"[API] ✗ 缺少 auth_token")
-        if not app_state.cookies.get('ct0'):
-            print(f"[API] ✗ 缺少 ct0")
-            
-        if not app_state.cookies.get('auth_token') or not app_state.cookies.get('ct0'):
-            raise Exception("缺少必要的 cookies (auth_token 或 ct0)")
+        # 检查多种可能的认证 token
+        auth_keys = ['auth_token', 'auth', 'kdt', 'twid']
+        csrf_keys = ['ct0', 'csrf_token', 'x-csrf-token']
         
-        # Twitter GraphQL API endpoint
+        auth_token = None
+        csrf_token = None
+        
+        for key in auth_keys:
+            if key in app_state.cookies:
+                auth_token = app_state.cookies[key]
+                print(f"[API] ✓ 使用认证 token: {key}")
+                break
+        
+        for key in csrf_keys:
+            if key in app_state.cookies:
+                csrf_token = app_state.cookies[key]
+                print(f"[API] ✓ 使用 CSRF token: {key}")
+                break
+        
+        if not auth_token:
+            print(f"[API] ✗ 缺少认证 token (尝试了: {auth_keys})")
+        if not csrf_token:
+            print(f"[API] ✗ 缺少 CSRF token (尝试了: {csrf_keys})")
+            
+        if not auth_token or not csrf_token:
+            raise Exception(f"缺少必要的 cookies (认证token 或 CSRF token)")
+        
+        # Twitter/X GraphQL API endpoint
         url = "https://twitter.com/i/api/graphql/3XDB26fBve-MmjHaWTUZBQ/Bookmarks"
         
         headers = {
             "authorization": "Bearer AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA",
-            "x-csrf-token": app_state.cookies.get('ct0', ''),
+            "x-csrf-token": csrf_token,
             "x-twitter-auth-type": "OAuth2Session",
             "x-twitter-active-user": "yes",
             "cookie": "; ".join([f"{k}={v}" for k, v in app_state.cookies.items()]),
