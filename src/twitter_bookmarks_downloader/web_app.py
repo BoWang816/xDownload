@@ -55,88 +55,122 @@ def create_web_app(settings: Settings) -> FastAPI:
     @app.on_event("startup")
     async def startup():
         """启动时初始化 Playwright"""
+        print("=" * 60)
+        print("🚀 启动 Twitter 书签下载器 Web 应用")
+        print("=" * 60)
+        print("[STARTUP] 初始化 Playwright...")
         app_state.playwright = await async_playwright().start()
+        print("[STARTUP] 启动 Chromium 浏览器（无头模式）...")
         app_state.browser = await app_state.playwright.chromium.launch(headless=True)
+        print("[STARTUP] ✓ 初始化完成！")
+        print(f"[STARTUP] 访问 http://localhost:10000 开始使用")
+        print("=" * 60)
     
     @app.on_event("shutdown")
     async def shutdown():
         """关闭时清理资源"""
+        print("\n[SHUTDOWN] 正在关闭应用...")
         if app_state.context:
+            print("[SHUTDOWN] 关闭浏览器上下文...")
             await app_state.context.close()
         if app_state.browser:
+            print("[SHUTDOWN] 关闭浏览器...")
             await app_state.browser.close()
         if app_state.playwright:
+            print("[SHUTDOWN] 停止 Playwright...")
             await app_state.playwright.stop()
+        print("[SHUTDOWN] ✓ 清理完成，再见！")
 
 
     @app.post("/api/login")
     async def login(request: LoginRequest):
         """处理用户登录"""
+        print(f"[LOGIN] 开始登录流程，用户名: {request.username}")
         try:
             storage_state_path = settings.storage_state
             
             # 检查是否有已保存的登录状态
             if storage_state_path.exists():
+                print(f"[LOGIN] 发现已保存的登录状态: {storage_state_path}")
                 app_state.context = await app_state.browser.new_context(
                     storage_state=str(storage_state_path)
                 )
             else:
+                print("[LOGIN] 创建新的浏览器上下文")
                 app_state.context = await app_state.browser.new_context()
             
             app_state.page = await app_state.context.new_page()
             
             # 检查是否已登录
+            print("[LOGIN] 检查是否已登录...")
             await app_state.page.goto("https://twitter.com/home", wait_until="domcontentloaded")
             if "login" not in app_state.page.url:
+                print("[LOGIN] ✓ 使用已保存的登录状态成功")
                 app_state.is_logged_in = True
                 return {"success": True, "message": "使用已保存的登录状态"}
             
             # 执行登录流程
+            print("[LOGIN] 开始执行登录流程...")
             await app_state.page.goto("https://twitter.com/i/flow/login", wait_until="networkidle")
             
             # 输入用户名
+            print("[LOGIN] 输入用户名...")
             await app_state.page.fill('input[name="text"]', request.username)
             await app_state.page.click('div[role="button"][data-testid="LoginForm_Login_Button"]')
             await asyncio.sleep(2)
 
             
             # 处理可能的用户名确认
+            print("[LOGIN] 检查是否需要邮箱验证...")
             try:
                 await app_state.page.wait_for_selector('input[name="text"]', timeout=3000)
                 value = request.email or request.username
+                print(f"[LOGIN] 需要邮箱验证，输入: {value}")
                 await app_state.page.fill('input[name="text"]', value)
                 await app_state.page.click('div[role="button"][data-testid="ocfEnterTextNextButton"]')
                 await asyncio.sleep(2)
-            except:
+            except Exception as e:
+                print(f"[LOGIN] 无需邮箱验证: {e}")
                 pass
             
             # 输入密码
+            print("[LOGIN] 输入密码...")
             await app_state.page.fill('input[name="password"]', request.password)
             await app_state.page.click('div[data-testid="LoginForm_Login_Button"]')
             
             # 等待登录完成
+            print("[LOGIN] 等待登录完成...")
             await app_state.page.wait_for_url("https://twitter.com/home*", timeout=30000)
             
             # 保存登录状态
+            print(f"[LOGIN] 保存登录状态到: {storage_state_path}")
             await app_state.context.storage_state(path=str(storage_state_path))
             app_state.is_logged_in = True
             
+            print("[LOGIN] ✓ 登录成功！")
             return {"success": True, "message": "登录成功"}
         
         except Exception as e:
+            error_msg = f"登录失败: {str(e)}"
+            print(f"[LOGIN] ✗ {error_msg}")
+            import traceback
+            traceback.print_exc()
             return JSONResponse(
                 status_code=400,
-                content={"success": False, "message": f"登录失败: {str(e)}"}
+                content={"success": False, "message": error_msg}
             )
 
 
     @app.get("/api/bookmarks")
     async def get_bookmarks(limit: int = 50):
         """获取书签列表"""
+        print(f"[BOOKMARKS] 开始获取书签，限制: {limit}")
         if not app_state.is_logged_in or not app_state.page:
+            print("[BOOKMARKS] ✗ 未登录")
             raise HTTPException(status_code=401, detail="请先登录")
         
         try:
+            print("[BOOKMARKS] 导航到书签页面...")
             await app_state.page.goto("https://twitter.com/i/bookmarks", wait_until="networkidle")
             
             bookmarks = []
@@ -145,6 +179,7 @@ def create_web_app(settings: Settings) -> FastAPI:
             max_scrolls = 20
             
             while len(bookmarks) < limit and scroll_attempts < max_scrolls:
+                print(f"[BOOKMARKS] 滚动尝试 {scroll_attempts + 1}/{max_scrolls}，已收集 {len(bookmarks)} 条")
                 # 提取推文信息
                 tweets = await app_state.page.evaluate("""
                     () => {
@@ -178,10 +213,14 @@ def create_web_app(settings: Settings) -> FastAPI:
                 """)
                 
                 # 添加新推文
+                new_count = 0
                 for tweet in tweets:
                     if tweet['id'] not in seen_ids and (tweet['hasVideo'] or tweet['hasImages']):
                         seen_ids.add(tweet['id'])
                         bookmarks.append(tweet)
+                        new_count += 1
+                
+                print(f"[BOOKMARKS] 本次提取到 {new_count} 条新书签")
                 
                 # 滚动加载更多
                 await app_state.page.mouse.wheel(0, 2000)
@@ -189,16 +228,23 @@ def create_web_app(settings: Settings) -> FastAPI:
                 scroll_attempts += 1
             
             app_state.bookmarks = bookmarks[:limit]
+            print(f"[BOOKMARKS] ✓ 成功获取 {len(app_state.bookmarks)} 条书签")
             return {"success": True, "bookmarks": app_state.bookmarks}
         
         except Exception as e:
-            raise HTTPException(status_code=500, detail=f"获取书签失败: {str(e)}")
+            error_msg = f"获取书签失败: {str(e)}"
+            print(f"[BOOKMARKS] ✗ {error_msg}")
+            import traceback
+            traceback.print_exc()
+            raise HTTPException(status_code=500, detail=error_msg)
 
 
     @app.post("/api/download")
     async def download_videos(request: DownloadRequest, background_tasks: BackgroundTasks):
         """下载选中的视频"""
+        print(f"[DOWNLOAD] 开始下载任务，共 {len(request.tweet_ids)} 条")
         if not app_state.is_logged_in:
+            print("[DOWNLOAD] ✗ 未登录")
             raise HTTPException(status_code=401, detail="请先登录")
         
         task_id = str(uuid4())
@@ -210,6 +256,7 @@ def create_web_app(settings: Settings) -> FastAPI:
             "items": []
         }
         
+        print(f"[DOWNLOAD] 创建下载任务: {task_id}")
         background_tasks.add_task(
             _download_task,
             task_id,
@@ -247,6 +294,7 @@ def create_web_app(settings: Settings) -> FastAPI:
 
 async def _download_task(task_id: str, tweet_ids: List[str], settings: Settings):
     """后台下载任务"""
+    print(f"[TASK-{task_id}] 开始后台下载任务，共 {len(tweet_ids)} 条")
     task = app_state.download_tasks[task_id]
     task["status"] = "running"
     
@@ -263,8 +311,9 @@ async def _download_task(task_id: str, tweet_ids: List[str], settings: Settings)
         "merge_output_format": "mp4",
     }
     
-    for tweet_id in tweet_ids:
+    for idx, tweet_id in enumerate(tweet_ids, 1):
         url = f"https://twitter.com/i/status/{tweet_id}"
+        print(f"[TASK-{task_id}] [{idx}/{len(tweet_ids)}] 下载: {url}")
         
         try:
             with YoutubeDL(ydl_opts) as ydl:
@@ -277,6 +326,8 @@ async def _download_task(task_id: str, tweet_ids: List[str], settings: Settings)
                     "status": "success",
                     "filename": Path(filename).name
                 })
+                
+                print(f"[TASK-{task_id}] ✓ 下载成功: {Path(filename).name}")
                 
                 # 更新历史记录
                 history[tweet_id] = {
@@ -292,9 +343,11 @@ async def _download_task(task_id: str, tweet_ids: List[str], settings: Settings)
                 "status": "failed",
                 "error": str(e)
             })
+            print(f"[TASK-{task_id}] ✗ 下载失败: {str(e)}")
     
     save_history(settings.history_file, history)
     task["status"] = "completed"
+    print(f"[TASK-{task_id}] ✓ 任务完成！成功: {task['completed']}, 失败: {task['failed']}")
 
 
 
