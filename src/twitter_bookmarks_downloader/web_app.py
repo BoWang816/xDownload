@@ -16,9 +16,11 @@ from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-from playwright.async_api import async_playwright, Browser, BrowserContext, Page
 from yt_dlp import YoutubeDL
 import httpx
+
+from twitter.account import Account
+from twitter.scraper import Scraper
 
 from .config import Settings
 from .history import load_history, save_history
@@ -27,10 +29,8 @@ from .history import load_history, save_history
 # 全局状态管理
 class AppState:
     def __init__(self):
-        self.browser: Optional[Browser] = None
-        self.context: Optional[BrowserContext] = None
-        self.page: Optional[Page] = None
-        self.playwright = None
+        self.account: Optional[Account] = None
+        self.scraper: Optional[Scraper] = None
         self.is_logged_in = False
         self.bookmarks: List[Dict[str, Any]] = []
         self.download_tasks: Dict[str, Dict[str, Any]] = {}
@@ -74,235 +74,97 @@ def create_web_app(settings: Settings) -> FastAPI:
 
     @app.post("/api/login")
     async def login(request: LoginRequest):
-        """使用 Twitter 内部 API 处理用户登录"""
+        """使用 twitter-api-client 库处理用户登录"""
         print(f"[LOGIN] 开始登录流程，用户名: {request.username}")
         try:
             storage_state_path = settings.storage_state
             
-            # 检查是否有已保存的登录状态
+            # 检查是否有已保存的登录状态（cookies）
             if storage_state_path.exists():
                 print(f"[LOGIN] 发现已保存的登录状态: {storage_state_path}")
                 try:
                     # 加载保存的 cookies
                     with open(storage_state_path, 'r') as f:
                         storage_data = json.load(f)
-                        cookies = storage_data.get('cookies', [])
+                        cookies_dict = storage_data.get('cookies', {})
                         
-                        for cookie in cookies:
-                            app_state.cookies[cookie['name']] = cookie['value']
-                        
-                        print(f"[LOGIN] 加载了 {len(app_state.cookies)} 个 cookies")
-                        
-                        # 验证 cookies 是否有效
-                        auth_keys = ['auth_token', 'auth', 'kdt', 'twid']
-                        csrf_keys = ['ct0', 'csrf_token', 'x-csrf-token']
-                        
-                        found_auth = any(key in app_state.cookies for key in auth_keys)
-                        found_csrf = any(key in app_state.cookies for key in csrf_keys)
-                        
-                        if found_auth and found_csrf:
-                            print("[LOGIN] ✓ 使用已保存的登录状态")
+                        # 检查是否有必要的 cookies
+                        if 'ct0' in cookies_dict and 'auth_token' in cookies_dict:
+                            print(f"[LOGIN] 尝试使用已保存的 cookies 登录...")
+                            
+                            # 使用 cookies 创建 Account
+                            app_state.account = Account(cookies=cookies_dict)
+                            app_state.scraper = Scraper(cookies=cookies_dict)
+                            app_state.cookies = cookies_dict
                             app_state.is_logged_in = True
+                            
+                            print("[LOGIN] ✓ 使用已保存的登录状态成功")
                             return {"success": True, "message": "使用已保存的登录状态"}
                         else:
-                            print("[LOGIN] 已保存的登录状态无效，需要重新登录")
+                            print("[LOGIN] 已保存的 cookies 不完整，需要重新登录")
                             storage_state_path.unlink()
                 except Exception as e:
                     print(f"[LOGIN] 加载登录状态失败: {e}")
+                    if storage_state_path.exists():
+                        storage_state_path.unlink()
             
-            # 使用 Twitter 内部登录 API
-            print("[LOGIN] 使用 Twitter 内部 API 登录...")
+            # 使用用户名密码登录
+            print("[LOGIN] 使用用户名和密码登录...")
             
-            async with httpx.AsyncClient(follow_redirects=True, timeout=30.0) as client:
-                # 步骤 1: 获取 guest token
-                print("[LOGIN] 步骤 1: 获取 guest token...")
-                guest_response = await client.post(
-                    "https://api.twitter.com/1.1/guest/activate.json",
-                    headers={
-                        "authorization": "Bearer AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA"
-                    }
-                )
-                guest_response.raise_for_status()
-                guest_token = guest_response.json()["guest_token"]
-                print(f"[LOGIN] ✓ 获取到 guest token: {guest_token[:20]}...")
-                
-                # 步骤 2: 初始化登录流程
-                print("[LOGIN] 步骤 2: 初始化登录流程...")
-                flow_response = await client.post(
-                    "https://api.twitter.com/1.1/onboarding/task.json?flow_name=login",
-                    headers={
-                        "authorization": "Bearer AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA",
-                        "x-guest-token": guest_token,
-                        "content-type": "application/json"
-                    },
-                    json={
-                        "input_flow_data": {
-                            "flow_context": {
-                                "debug_overrides": {},
-                                "start_location": {"location": "unknown"}
-                            }
-                        },
-                        "subtask_versions": {}
-                    }
-                )
-                flow_response.raise_for_status()
-                flow_data = flow_response.json()
-                flow_token = flow_data["flow_token"]
-                print(f"[LOGIN] ✓ 获取到 flow token")
-                
-                # 步骤 3: 提交用户名
-                print("[LOGIN] 步骤 3: 提交用户名...")
-                username_response = await client.post(
-                    "https://api.twitter.com/1.1/onboarding/task.json",
-                    headers={
-                        "authorization": "Bearer AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA",
-                        "x-guest-token": guest_token,
-                        "content-type": "application/json"
-                    },
-                    json={
-                        "flow_token": flow_token,
-                        "subtask_inputs": [
-                            {
-                                "subtask_id": "LoginEnterUserIdentifierSSO",
-                                "settings_list": {
-                                    "setting_responses": [
-                                        {
-                                            "key": "user_identifier",
-                                            "response_data": {
-                                                "text_data": {"result": request.username}
-                                            }
-                                        }
-                                    ],
-                                    "link": "next_link"
-                                }
-                            }
-                        ]
-                    }
-                )
-                username_response.raise_for_status()
-                username_data = username_response.json()
-                flow_token = username_data["flow_token"]
-                print(f"[LOGIN] ✓ 用户名已提交")
-                
-                # 检查是否需要额外验证（邮箱/电话）
-                subtasks = username_data.get("subtasks", [])
-                if subtasks and subtasks[0].get("subtask_id") == "LoginEnterAlternateIdentifierSubtask":
-                    print("[LOGIN] 步骤 3.5: 需要额外验证（邮箱）...")
-                    if not request.email:
-                        raise Exception("需要邮箱验证，但未提供邮箱")
-                    
-                    verify_response = await client.post(
-                        "https://api.twitter.com/1.1/onboarding/task.json",
-                        headers={
-                            "authorization": "Bearer AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA",
-                            "x-guest-token": guest_token,
-                            "content-type": "application/json"
-                        },
-                        json={
-                            "flow_token": flow_token,
-                            "subtask_inputs": [
-                                {
-                                    "subtask_id": "LoginEnterAlternateIdentifierSubtask",
-                                    "enter_text": {
-                                        "text": request.email,
-                                        "link": "next_link"
-                                    }
-                                }
-                            ]
-                        }
+            # 在后台线程中执行登录（因为 twitter-api-client 是同步的）
+            def do_login():
+                try:
+                    account = Account(
+                        email=request.email or request.username,
+                        username=request.username,
+                        password=request.password
                     )
-                    verify_response.raise_for_status()
-                    verify_data = verify_response.json()
-                    flow_token = verify_data["flow_token"]
-                    print(f"[LOGIN] ✓ 邮箱验证已提交")
-                
-                # 步骤 4: 提交密码
-                print("[LOGIN] 步骤 4: 提交密码...")
-                password_response = await client.post(
-                    "https://api.twitter.com/1.1/onboarding/task.json",
-                    headers={
-                        "authorization": "Bearer AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA",
-                        "x-guest-token": guest_token,
-                        "content-type": "application/json"
-                    },
-                    json={
-                        "flow_token": flow_token,
-                        "subtask_inputs": [
-                            {
-                                "subtask_id": "LoginEnterPassword",
-                                "enter_password": {
-                                    "password": request.password,
-                                    "link": "next_link"
-                                }
-                            }
-                        ]
-                    }
-                )
-                password_response.raise_for_status()
-                password_data = password_response.json()
-                print(f"[LOGIN] ✓ 密码已提交")
-                
-                # 步骤 5: 检查登录结果并提取 cookies
-                print("[LOGIN] 步骤 5: 提取认证 cookies...")
-                
-                # 从响应的 cookies 中提取
-                for cookie in client.cookies.jar:
-                    app_state.cookies[cookie.name] = cookie.value
-                    print(f"[LOGIN]   - {cookie.name} (domain: {cookie.domain})")
-                
-                # 检查是否获取到必要的 cookies
-                auth_keys = ['auth_token', 'auth', 'kdt', 'twid']
-                csrf_keys = ['ct0', 'csrf_token', 'x-csrf-token']
-                
-                found_auth = None
-                found_csrf = None
-                
-                for key in auth_keys:
-                    if key in app_state.cookies:
-                        found_auth = key
-                        print(f"[LOGIN] ✓ 找到认证 token: {key}")
-                        break
-                
-                for key in csrf_keys:
-                    if key in app_state.cookies:
-                        found_csrf = key
-                        print(f"[LOGIN] ✓ 找到 CSRF token: {key}")
-                        break
-                
-                if not found_auth or not found_csrf:
-                    print(f"[LOGIN] ✗ 缺少必要的认证信息")
-                    print(f"[LOGIN] 所有 cookie 名称: {list(app_state.cookies.keys())}")
-                    raise Exception("登录失败：未能获取到有效的认证 token")
-                
-                # 保存登录状态
-                print(f"[LOGIN] 保存登录状态到: {storage_state_path}")
-                storage_state_path.parent.mkdir(parents=True, exist_ok=True)
-                
-                storage_data = {
-                    "cookies": [
-                        {
-                            "name": name,
-                            "value": value,
-                            "domain": ".twitter.com",
-                            "path": "/"
-                        }
-                        for name, value in app_state.cookies.items()
-                    ]
-                }
-                
-                with open(storage_state_path, 'w') as f:
-                    json.dump(storage_data, f, indent=2)
-                
-                app_state.is_logged_in = True
-                print("[LOGIN] ✓ 登录成功！")
-                return {"success": True, "message": "登录成功"}
+                    return account, None
+                except Exception as e:
+                    return None, str(e)
+            
+            # 在线程池中执行
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                future = executor.submit(do_login)
+                account, error = future.result(timeout=60)
+            
+            if error:
+                raise Exception(error)
+            
+            if not account:
+                raise Exception("登录失败，未能创建 Account 对象")
+            
+            app_state.account = account
+            app_state.scraper = Scraper(cookies=account.session.cookies.get_dict())
+            
+            # 提取 cookies
+            cookies_dict = account.session.cookies.get_dict()
+            app_state.cookies = cookies_dict
+            
+            print(f"[LOGIN] ✓ 获取到 {len(cookies_dict)} 个 cookies")
+            for key in ['ct0', 'auth_token']:
+                if key in cookies_dict:
+                    print(f"[LOGIN]   - {key}: {cookies_dict[key][:20]}...")
+            
+            # 保存登录状态
+            print(f"[LOGIN] 保存登录状态到: {storage_state_path}")
+            storage_state_path.parent.mkdir(parents=True, exist_ok=True)
+            
+            storage_data = {
+                "cookies": cookies_dict
+            }
+            
+            with open(storage_state_path, 'w') as f:
+                json.dump(storage_data, f, indent=2)
+            
+            app_state.is_logged_in = True
+            print("[LOGIN] ✓ 登录成功！")
+            return {"success": True, "message": "登录成功"}
         
-        except httpx.HTTPStatusError as e:
-            error_msg = f"API 请求失败: {e.response.status_code}"
+        except concurrent.futures.TimeoutError:
+            error_msg = "登录超时，请检查网络连接或稍后再试"
             print(f"[LOGIN] ✗ {error_msg}")
-            print(f"[LOGIN] 响应内容: {e.response.text[:500]}")
-            import traceback
-            traceback.print_exc()
             return JSONResponse(
                 status_code=400,
                 content={"success": False, "message": error_msg}
@@ -319,168 +181,101 @@ def create_web_app(settings: Settings) -> FastAPI:
 
 
     async def fetch_bookmarks_via_api(limit: int = 50) -> List[Dict[str, Any]]:
-        """使用 Twitter API 获取书签"""
-        print(f"[API] 使用 Twitter/X API 获取书签，限制: {limit}")
-        print(f"[API] 当前 cookies 数量: {len(app_state.cookies)}")
-        print(f"[API] Cookie 名称: {list(app_state.cookies.keys())}")
+        """使用 twitter-api-client 获取书签"""
+        print(f"[API] 使用 twitter-api-client 获取书签，限制: {limit}")
         
-        # 检查多种可能的认证 token
-        auth_keys = ['auth_token', 'auth', 'kdt', 'twid']
-        csrf_keys = ['ct0', 'csrf_token', 'x-csrf-token']
+        if not app_state.account:
+            raise Exception("未登录，请先登录")
         
-        auth_token = None
-        csrf_token = None
-        
-        for key in auth_keys:
-            if key in app_state.cookies:
-                auth_token = app_state.cookies[key]
-                print(f"[API] ✓ 使用认证 token: {key}")
-                break
-        
-        for key in csrf_keys:
-            if key in app_state.cookies:
-                csrf_token = app_state.cookies[key]
-                print(f"[API] ✓ 使用 CSRF token: {key}")
-                break
-        
-        if not auth_token:
-            print(f"[API] ✗ 缺少认证 token (尝试了: {auth_keys})")
-        if not csrf_token:
-            print(f"[API] ✗ 缺少 CSRF token (尝试了: {csrf_keys})")
-            
-        if not auth_token or not csrf_token:
-            raise Exception(f"缺少必要的 cookies (认证token 或 CSRF token)")
-        
-        # Twitter/X GraphQL API endpoint
-        url = "https://twitter.com/i/api/graphql/3XDB26fBve-MmjHaWTUZBQ/Bookmarks"
-        
-        headers = {
-            "authorization": "Bearer AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA",
-            "x-csrf-token": csrf_token,
-            "x-twitter-auth-type": "OAuth2Session",
-            "x-twitter-active-user": "yes",
-            "cookie": "; ".join([f"{k}={v}" for k, v in app_state.cookies.items()]),
-        }
-        
-        variables = {
-            "count": limit,
-            "includePromotedContent": False
-        }
-        
-        features = {
-            "graphql_timeline_v2_bookmark_timeline": True,
-            "responsive_web_graphql_exclude_directive_enabled": True,
-            "verified_phone_label_enabled": False,
-            "creator_subscriptions_tweet_preview_api_enabled": True,
-            "responsive_web_graphql_timeline_navigation_enabled": True,
-            "responsive_web_graphql_skip_user_profile_image_extensions_enabled": False,
-            "c9s_tweet_anatomy_moderator_badge_enabled": True,
-            "tweetypie_unmention_optimization_enabled": True,
-            "responsive_web_edit_tweet_api_enabled": True,
-            "graphql_is_translatable_rweb_tweet_is_translatable_enabled": True,
-            "view_counts_everywhere_api_enabled": True,
-            "longform_notetweets_consumption_enabled": True,
-            "responsive_web_twitter_article_tweet_consumption_enabled": True,
-            "tweet_awards_web_tipping_enabled": False,
-            "freedom_of_speech_not_reach_fetch_enabled": True,
-            "standardized_nudges_misinfo": True,
-            "tweet_with_visibility_results_prefer_gql_limited_actions_policy_enabled": True,
-            "rweb_video_timestamps_enabled": True,
-            "longform_notetweets_rich_text_read_enabled": True,
-            "longform_notetweets_inline_media_enabled": True,
-            "responsive_web_media_download_video_enabled": False,
-            "responsive_web_enhance_cards_enabled": False
-        }
-        
-        params = {
-            "variables": json.dumps(variables),
-            "features": json.dumps(features)
-        }
-        
-        bookmarks = []
-        
-        async with httpx.AsyncClient() as client:
+        # 在后台线程中执行（因为 twitter-api-client 是同步的）
+        def do_fetch():
             try:
-                print(f"[API] 发送请求到 Twitter API...")
-                response = await client.get(url, headers=headers, params=params, timeout=30.0)
-                response.raise_for_status()
-                
-                data = response.json()
-                print(f"[API] ✓ 收到响应")
-                
-                # 解析响应
-                instructions = data.get("data", {}).get("bookmark_timeline_v2", {}).get("timeline", {}).get("instructions", [])
-                
-                for instruction in instructions:
-                    if instruction.get("type") == "TimelineAddEntries":
-                        entries = instruction.get("entries", [])
-                        
-                        for entry in entries:
-                            if entry.get("entryId", "").startswith("tweet-"):
-                                content = entry.get("content", {})
-                                item_content = content.get("itemContent", {})
-                                tweet_results = item_content.get("tweet_results", {}).get("result", {})
-                                
-                                if not tweet_results:
-                                    continue
-                                
-                                legacy = tweet_results.get("legacy", {})
-                                user = tweet_results.get("core", {}).get("user_results", {}).get("result", {}).get("legacy", {})
-                                
-                                tweet_id = legacy.get("id_str", "")
-                                text = legacy.get("full_text", "")
-                                author = user.get("screen_name", "Unknown")
-                                
-                                # 检查是否有视频
-                                media = legacy.get("extended_entities", {}).get("media", [])
-                                has_video = False
-                                video_url = None
-                                thumbnail = None
-                                
-                                for m in media:
-                                    if m.get("type") in ["video", "animated_gif"]:
-                                        has_video = True
-                                        thumbnail = m.get("media_url_https")
-                                        # 获取最高质量的视频
-                                        variants = m.get("video_info", {}).get("variants", [])
-                                        max_bitrate = 0
-                                        for variant in variants:
-                                            if variant.get("content_type") == "video/mp4":
-                                                bitrate = variant.get("bitrate", 0)
-                                                if bitrate > max_bitrate:
-                                                    max_bitrate = bitrate
-                                                    video_url = variant.get("url")
-                                        break
-                                
-                                if has_video and video_url:
-                                    bookmarks.append({
-                                        "id": tweet_id,
-                                        "url": f"https://twitter.com/i/status/{tweet_id}",
-                                        "text": text[:200],
-                                        "author": author,
-                                        "hasVideo": True,
-                                        "videoUrl": video_url,
-                                        "thumbnail": thumbnail
-                                    })
-                                    
-                                    if len(bookmarks) >= limit:
-                                        break
-                        
-                        if len(bookmarks) >= limit:
-                            break
-                
-                print(f"[API] ✓ 解析到 {len(bookmarks)} 条包含视频的书签")
-                return bookmarks
-                
-            except httpx.HTTPStatusError as e:
-                print(f"[API] ✗ HTTP 错误: {e.response.status_code}")
-                print(f"[API] 响应内容: {e.response.text[:500]}")
-                raise Exception(f"Twitter API 请求失败: {e.response.status_code}")
+                # 获取书签
+                bookmarks_data = app_state.account.bookmarks()
+                return bookmarks_data, None
             except Exception as e:
-                print(f"[API] ✗ 错误: {str(e)}")
-                import traceback
-                traceback.print_exc()
-                raise
+                return None, str(e)
+        
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            future = executor.submit(do_fetch)
+            bookmarks_data, error = future.result(timeout=60)
+        
+        if error:
+            raise Exception(error)
+        
+        if not bookmarks_data:
+            print("[API] ⚠️  未获取到书签数据")
+            return []
+        
+        # 解析书签数据
+        bookmarks = []
+        entries = bookmarks_data.get('data', {}).get('bookmark_timeline_v2', {}).get('timeline', {}).get('instructions', [])
+        
+        for instruction in entries:
+            if instruction.get('type') == 'TimelineAddEntries':
+                for entry in instruction.get('entries', []):
+                    entry_id = entry.get('entryId', '')
+                    
+                    if entry_id.startswith('tweet-'):
+                        content = entry.get('content', {})
+                        item_content = content.get('itemContent', {})
+                        tweet_results = item_content.get('tweet_results', {}).get('result', {})
+                        
+                        if not tweet_results:
+                            continue
+                        
+                        # 处理可能的 tombstone（已删除的推文）
+                        if tweet_results.get('__typename') == 'TweetTombstone':
+                            continue
+                        
+                        legacy = tweet_results.get('legacy', {})
+                        user = tweet_results.get('core', {}).get('user_results', {}).get('result', {}).get('legacy', {})
+                        
+                        tweet_id = legacy.get('id_str', '')
+                        text = legacy.get('full_text', '')
+                        author = user.get('screen_name', 'Unknown')
+                        
+                        # 检查是否有视频
+                        media = legacy.get('extended_entities', {}).get('media', [])
+                        has_video = False
+                        video_url = None
+                        thumbnail = None
+                        
+                        for m in media:
+                            if m.get('type') in ['video', 'animated_gif']:
+                                has_video = True
+                                thumbnail = m.get('media_url_https')
+                                # 获取最高质量的视频
+                                variants = m.get('video_info', {}).get('variants', [])
+                                max_bitrate = 0
+                                for variant in variants:
+                                    if variant.get('content_type') == 'video/mp4':
+                                        bitrate = variant.get('bitrate', 0)
+                                        if bitrate > max_bitrate:
+                                            max_bitrate = bitrate
+                                            video_url = variant.get('url')
+                                break
+                        
+                        if has_video and video_url:
+                            bookmarks.append({
+                                'id': tweet_id,
+                                'url': f'https://twitter.com/i/status/{tweet_id}',
+                                'text': text[:200] if text else '无文字内容',
+                                'author': author,
+                                'hasVideo': True,
+                                'videoUrl': video_url,
+                                'thumbnail': thumbnail
+                            })
+                            
+                            if len(bookmarks) >= limit:
+                                break
+                
+                if len(bookmarks) >= limit:
+                    break
+        
+        print(f"[API] ✓ 解析到 {len(bookmarks)} 条包含视频的书签")
+        return bookmarks
 
 
     @app.get("/api/bookmarks")
@@ -551,6 +346,41 @@ def create_web_app(settings: Settings) -> FastAPI:
             "bookmarks_count": len(app_state.bookmarks),
             "download_tasks": len(app_state.download_tasks)
         }
+    
+    @app.post("/api/logout")
+    async def logout():
+        """登出并清除登录状态"""
+        print("[LOGOUT] 用户登出")
+        app_state.is_logged_in = False
+        app_state.cookies.clear()
+        app_state.bookmarks.clear()
+        
+        # 删除保存的登录状态
+        storage_state_path = settings.storage_state
+        if storage_state_path.exists():
+            storage_state_path.unlink()
+            print(f"[LOGOUT] 已删除登录状态文件: {storage_state_path}")
+        
+        return {"success": True, "message": "已登出"}
+    
+    @app.get("/api/validate_login")
+    async def validate_login():
+        """验证当前登录状态是否有效"""
+        if not app_state.is_logged_in:
+            return {"valid": False, "message": "未登录"}
+        
+        # 检查 cookies 是否存在
+        auth_keys = ['auth_token', 'auth', 'kdt', 'twid']
+        csrf_keys = ['ct0', 'csrf_token', 'x-csrf-token']
+        
+        has_auth = any(key in app_state.cookies for key in auth_keys)
+        has_csrf = any(key in app_state.cookies for key in csrf_keys)
+        
+        if not has_auth or not has_csrf:
+            app_state.is_logged_in = False
+            return {"valid": False, "message": "登录状态已失效"}
+        
+        return {"valid": True, "message": "登录状态有效"}
 
     @app.get("/", response_class=HTMLResponse)
     async def index():
@@ -561,7 +391,7 @@ def create_web_app(settings: Settings) -> FastAPI:
 
 
 async def _download_task(task_id: str, tweet_ids: List[str], settings: Settings):
-    """后台下载任务"""
+    """后台下载任务（带重试机制）"""
     print(f"[TASK-{task_id}] 开始后台下载任务，共 {len(tweet_ids)} 条")
     task = app_state.download_tasks[task_id]
     task["status"] = "running"
@@ -573,85 +403,139 @@ async def _download_task(task_id: str, tweet_ids: List[str], settings: Settings)
     for idx, tweet_id in enumerate(tweet_ids, 1):
         print(f"[TASK-{task_id}] [{idx}/{len(tweet_ids)}] 处理推文: {tweet_id}")
         
-        try:
-            # 从书签列表中查找视频 URL
-            bookmark = next((b for b in app_state.bookmarks if b['id'] == tweet_id), None)
-            
-            if bookmark and bookmark.get('videoUrl'):
-                # 直接下载视频 URL
-                video_url = bookmark['videoUrl']
-                print(f"[TASK-{task_id}] 使用直接链接下载")
-                
-                filename = f"{bookmark['author']}_{tweet_id}.mp4"
-                filepath = download_dir / filename
-                
-                async with httpx.AsyncClient() as client:
-                    response = await client.get(video_url, timeout=60.0)
-                    response.raise_for_status()
-                    
-                    with open(filepath, 'wb') as f:
-                        f.write(response.content)
-                
+        # 检查是否已下载
+        if tweet_id in history:
+            saved_file = history[tweet_id].get("saved_file", "")
+            if Path(saved_file).exists():
+                print(f"[TASK-{task_id}] ⚠️  已下载，跳过: {Path(saved_file).name}")
                 task["completed"] += 1
                 task["items"].append({
                     "tweet_id": tweet_id,
-                    "status": "success",
-                    "filename": filename
+                    "status": "skipped",
+                    "filename": Path(saved_file).name,
+                    "message": "已下载"
                 })
+                continue
+        
+        # 尝试下载（最多重试 3 次）
+        max_retries = 3
+        success = False
+        
+        for attempt in range(1, max_retries + 1):
+            try:
+                # 从书签列表中查找视频 URL
+                bookmark = next((b for b in app_state.bookmarks if b['id'] == tweet_id), None)
                 
-                print(f"[TASK-{task_id}] ✓ 下载成功: {filename}")
-                
-                # 更新历史记录
-                history[tweet_id] = {
-                    "url": f"https://twitter.com/i/status/{tweet_id}",
-                    "saved_file": str(filepath),
-                    "downloaded_at": datetime.utcnow().isoformat() + "Z"
-                }
-            else:
-                # 回退到 yt-dlp
-                print(f"[TASK-{task_id}] 使用 yt-dlp 下载")
-                url = f"https://twitter.com/i/status/{tweet_id}"
-                
-                ydl_opts = {
-                    "outtmpl": str(download_dir / "%(uploader)s_%(upload_date)s_%(id)s.%(ext)s"),
-                    "format": "bv*+ba/best",
-                    "quiet": True,
-                    "no_warnings": True,
-                    "merge_output_format": "mp4",
-                }
-                
-                with YoutubeDL(ydl_opts) as ydl:
-                    info = ydl.extract_info(url, download=True)
-                    filename = ydl.prepare_filename(info)
+                if bookmark and bookmark.get('videoUrl'):
+                    # 方法 1: 直接下载视频 URL
+                    video_url = bookmark['videoUrl']
+                    print(f"[TASK-{task_id}] 尝试 {attempt}/{max_retries}: 使用直接链接下载")
+                    
+                    filename = f"{bookmark['author']}_{tweet_id}.mp4"
+                    filepath = download_dir / filename
+                    
+                    async with httpx.AsyncClient(follow_redirects=True) as client:
+                        response = await client.get(video_url, timeout=120.0)
+                        response.raise_for_status()
+                        
+                        # 流式下载大文件
+                        with open(filepath, 'wb') as f:
+                            async for chunk in response.aiter_bytes(chunk_size=8192):
+                                f.write(chunk)
+                    
+                    # 验证文件大小
+                    file_size = filepath.stat().st_size
+                    if file_size < 1024:  # 小于 1KB 可能是错误
+                        raise Exception(f"下载的文件太小 ({file_size} bytes)，可能下载失败")
                     
                     task["completed"] += 1
                     task["items"].append({
                         "tweet_id": tweet_id,
                         "status": "success",
-                        "filename": Path(filename).name
+                        "filename": filename,
+                        "size": f"{file_size / 1024 / 1024:.2f} MB"
                     })
                     
-                    print(f"[TASK-{task_id}] ✓ 下载成功: {Path(filename).name}")
+                    print(f"[TASK-{task_id}] ✓ 下载成功: {filename} ({file_size / 1024 / 1024:.2f} MB)")
                     
                     # 更新历史记录
                     history[tweet_id] = {
-                        "url": url,
-                        "saved_file": filename,
-                        "downloaded_at": datetime.utcnow().isoformat() + "Z"
+                        "url": f"https://twitter.com/i/status/{tweet_id}",
+                        "saved_file": str(filepath),
+                        "downloaded_at": datetime.utcnow().isoformat() + "Z",
+                        "file_size": file_size
                     }
-        
-        except Exception as e:
-            task["failed"] += 1
-            task["items"].append({
-                "tweet_id": tweet_id,
-                "status": "failed",
-                "error": str(e)
-            })
-            print(f"[TASK-{task_id}] ✗ 下载失败: {str(e)}")
+                    
+                    success = True
+                    break
+                    
+                else:
+                    # 方法 2: 回退到 yt-dlp
+                    print(f"[TASK-{task_id}] 尝试 {attempt}/{max_retries}: 使用 yt-dlp 下载")
+                    url = f"https://twitter.com/i/status/{tweet_id}"
+                    
+                    ydl_opts = {
+                        "outtmpl": str(download_dir / "%(uploader)s_%(id)s.%(ext)s"),
+                        "format": "bv*+ba/best",
+                        "quiet": True,
+                        "no_warnings": True,
+                        "merge_output_format": "mp4",
+                        "retries": 3,
+                        "fragment_retries": 3,
+                    }
+                    
+                    with YoutubeDL(ydl_opts) as ydl:
+                        info = ydl.extract_info(url, download=True)
+                        filename = ydl.prepare_filename(info)
+                        filepath = Path(filename)
+                        
+                        if not filepath.exists():
+                            raise Exception("yt-dlp 下载完成但文件不存在")
+                        
+                        file_size = filepath.stat().st_size
+                        
+                        task["completed"] += 1
+                        task["items"].append({
+                            "tweet_id": tweet_id,
+                            "status": "success",
+                            "filename": filepath.name,
+                            "size": f"{file_size / 1024 / 1024:.2f} MB"
+                        })
+                        
+                        print(f"[TASK-{task_id}] ✓ 下载成功: {filepath.name} ({file_size / 1024 / 1024:.2f} MB)")
+                        
+                        # 更新历史记录
+                        history[tweet_id] = {
+                            "url": url,
+                            "saved_file": str(filepath),
+                            "downloaded_at": datetime.utcnow().isoformat() + "Z",
+                            "file_size": file_size
+                        }
+                        
+                        success = True
+                        break
+            
+            except Exception as e:
+                error_msg = str(e)
+                print(f"[TASK-{task_id}] ✗ 尝试 {attempt}/{max_retries} 失败: {error_msg}")
+                
+                if attempt < max_retries:
+                    # 等待后重试
+                    await asyncio.sleep(2 * attempt)
+                else:
+                    # 所有重试都失败
+                    task["failed"] += 1
+                    task["items"].append({
+                        "tweet_id": tweet_id,
+                        "status": "failed",
+                        "error": error_msg
+                    })
+                    print(f"[TASK-{task_id}] ✗ 下载失败（已重试 {max_retries} 次）: {error_msg}")
     
     save_history(settings.history_file, history)
     task["status"] = "completed"
     print(f"[TASK-{task_id}] ✓ 任务完成！成功: {task['completed']}, 失败: {task['failed']}")
+
 
 
 
