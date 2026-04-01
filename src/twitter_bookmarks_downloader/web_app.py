@@ -56,7 +56,7 @@ def create_web_app(settings: Settings) -> FastAPI:
     async def startup():
         """启动时初始化 Playwright"""
         app_state.playwright = await async_playwright().start()
-        app_state.browser = await app_state.playwright.chromium.launch(headless=False)
+        app_state.browser = await app_state.playwright.chromium.launch(headless=True)
     
     @app.on_event("shutdown")
     async def shutdown():
