@@ -56,14 +56,11 @@ def create_web_app(settings: Settings) -> FastAPI:
 
     @app.on_event("startup")
     async def startup():
-        """启动时初始化 Playwright"""
+        """启动时初始化"""
         print("=" * 60)
         print("🚀 启动 Twitter 书签下载器 Web 应用")
         print("=" * 60)
-        print("[STARTUP] 初始化 Playwright...")
-        app_state.playwright = await async_playwright().start()
-        print("[STARTUP] 启动 Chromium 浏览器（无头模式）...")
-        app_state.browser = await app_state.playwright.chromium.launch(headless=True)
+        print("[STARTUP] 使用 Twitter API 进行登录和数据获取")
         print("[STARTUP] ✓ 初始化完成！")
         print(f"[STARTUP] 访问 http://localhost:10000 开始使用")
         print("=" * 60)
@@ -72,21 +69,12 @@ def create_web_app(settings: Settings) -> FastAPI:
     async def shutdown():
         """关闭时清理资源"""
         print("\n[SHUTDOWN] 正在关闭应用...")
-        if app_state.context:
-            print("[SHUTDOWN] 关闭浏览器上下文...")
-            await app_state.context.close()
-        if app_state.browser:
-            print("[SHUTDOWN] 关闭浏览器...")
-            await app_state.browser.close()
-        if app_state.playwright:
-            print("[SHUTDOWN] 停止 Playwright...")
-            await app_state.playwright.stop()
         print("[SHUTDOWN] ✓ 清理完成，再见！")
 
 
     @app.post("/api/login")
     async def login(request: LoginRequest):
-        """处理用户登录"""
+        """使用 Twitter 内部 API 处理用户登录"""
         print(f"[LOGIN] 开始登录流程，用户名: {request.username}")
         try:
             storage_state_path = settings.storage_state
@@ -94,47 +82,175 @@ def create_web_app(settings: Settings) -> FastAPI:
             # 检查是否有已保存的登录状态
             if storage_state_path.exists():
                 print(f"[LOGIN] 发现已保存的登录状态: {storage_state_path}")
-                app_state.context = await app_state.browser.new_context(
-                    storage_state=str(storage_state_path)
+                try:
+                    # 加载保存的 cookies
+                    with open(storage_state_path, 'r') as f:
+                        storage_data = json.load(f)
+                        cookies = storage_data.get('cookies', [])
+                        
+                        for cookie in cookies:
+                            app_state.cookies[cookie['name']] = cookie['value']
+                        
+                        print(f"[LOGIN] 加载了 {len(app_state.cookies)} 个 cookies")
+                        
+                        # 验证 cookies 是否有效
+                        auth_keys = ['auth_token', 'auth', 'kdt', 'twid']
+                        csrf_keys = ['ct0', 'csrf_token', 'x-csrf-token']
+                        
+                        found_auth = any(key in app_state.cookies for key in auth_keys)
+                        found_csrf = any(key in app_state.cookies for key in csrf_keys)
+                        
+                        if found_auth and found_csrf:
+                            print("[LOGIN] ✓ 使用已保存的登录状态")
+                            app_state.is_logged_in = True
+                            return {"success": True, "message": "使用已保存的登录状态"}
+                        else:
+                            print("[LOGIN] 已保存的登录状态无效，需要重新登录")
+                            storage_state_path.unlink()
+                except Exception as e:
+                    print(f"[LOGIN] 加载登录状态失败: {e}")
+            
+            # 使用 Twitter 内部登录 API
+            print("[LOGIN] 使用 Twitter 内部 API 登录...")
+            
+            async with httpx.AsyncClient(follow_redirects=True, timeout=30.0) as client:
+                # 步骤 1: 获取 guest token
+                print("[LOGIN] 步骤 1: 获取 guest token...")
+                guest_response = await client.post(
+                    "https://api.twitter.com/1.1/guest/activate.json",
+                    headers={
+                        "authorization": "Bearer AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA"
+                    }
                 )
-            else:
-                print("[LOGIN] 创建新的浏览器上下文")
-                app_state.context = await app_state.browser.new_context()
-            
-            app_state.page = await app_state.context.new_page()
-            
-            # 检查是否已登录
-            print("[LOGIN] 检查是否已登录...")
-            # 尝试访问 x.com 或 twitter.com
-            try:
-                await app_state.page.goto("https://x.com/home", wait_until="domcontentloaded")
-            except:
-                await app_state.page.goto("https://twitter.com/home", wait_until="domcontentloaded")
-            
-            await asyncio.sleep(2)
-            
-            current_url = app_state.page.url
-            print(f"[LOGIN] 当前 URL: {current_url}")
-            
-            if "login" not in current_url and ("home" in current_url or "x.com" in current_url):
-                print("[LOGIN] ✓ 使用已保存的登录状态成功")
+                guest_response.raise_for_status()
+                guest_token = guest_response.json()["guest_token"]
+                print(f"[LOGIN] ✓ 获取到 guest token: {guest_token[:20]}...")
                 
-                # 提取 cookies - 同时支持 x.com 和 twitter.com
-                print("[LOGIN] 提取 cookies...")
-                all_cookies = await app_state.context.cookies([
-                    "https://x.com",
-                    "https://twitter.com",
-                    "https://api.x.com",
-                    "https://api.twitter.com"
-                ])
-                print(f"[LOGIN] 获取到 {len(all_cookies)} 个 cookies")
+                # 步骤 2: 初始化登录流程
+                print("[LOGIN] 步骤 2: 初始化登录流程...")
+                flow_response = await client.post(
+                    "https://api.twitter.com/1.1/onboarding/task.json?flow_name=login",
+                    headers={
+                        "authorization": "Bearer AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA",
+                        "x-guest-token": guest_token,
+                        "content-type": "application/json"
+                    },
+                    json={
+                        "input_flow_data": {
+                            "flow_context": {
+                                "debug_overrides": {},
+                                "start_location": {"location": "unknown"}
+                            }
+                        },
+                        "subtask_versions": {}
+                    }
+                )
+                flow_response.raise_for_status()
+                flow_data = flow_response.json()
+                flow_token = flow_data["flow_token"]
+                print(f"[LOGIN] ✓ 获取到 flow token")
                 
-                for cookie in all_cookies:
-                    app_state.cookies[cookie['name']] = cookie['value']
-                    # 打印 cookie 名称和域名
-                    print(f"[LOGIN]   - {cookie['name']} (domain: {cookie.get('domain', 'N/A')})")
+                # 步骤 3: 提交用户名
+                print("[LOGIN] 步骤 3: 提交用户名...")
+                username_response = await client.post(
+                    "https://api.twitter.com/1.1/onboarding/task.json",
+                    headers={
+                        "authorization": "Bearer AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA",
+                        "x-guest-token": guest_token,
+                        "content-type": "application/json"
+                    },
+                    json={
+                        "flow_token": flow_token,
+                        "subtask_inputs": [
+                            {
+                                "subtask_id": "LoginEnterUserIdentifierSSO",
+                                "settings_list": {
+                                    "setting_responses": [
+                                        {
+                                            "key": "user_identifier",
+                                            "response_data": {
+                                                "text_data": {"result": request.username}
+                                            }
+                                        }
+                                    ],
+                                    "link": "next_link"
+                                }
+                            }
+                        ]
+                    }
+                )
+                username_response.raise_for_status()
+                username_data = username_response.json()
+                flow_token = username_data["flow_token"]
+                print(f"[LOGIN] ✓ 用户名已提交")
                 
-                # 检查多种可能的认证 token 名称
+                # 检查是否需要额外验证（邮箱/电话）
+                subtasks = username_data.get("subtasks", [])
+                if subtasks and subtasks[0].get("subtask_id") == "LoginEnterAlternateIdentifierSubtask":
+                    print("[LOGIN] 步骤 3.5: 需要额外验证（邮箱）...")
+                    if not request.email:
+                        raise Exception("需要邮箱验证，但未提供邮箱")
+                    
+                    verify_response = await client.post(
+                        "https://api.twitter.com/1.1/onboarding/task.json",
+                        headers={
+                            "authorization": "Bearer AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA",
+                            "x-guest-token": guest_token,
+                            "content-type": "application/json"
+                        },
+                        json={
+                            "flow_token": flow_token,
+                            "subtask_inputs": [
+                                {
+                                    "subtask_id": "LoginEnterAlternateIdentifierSubtask",
+                                    "enter_text": {
+                                        "text": request.email,
+                                        "link": "next_link"
+                                    }
+                                }
+                            ]
+                        }
+                    )
+                    verify_response.raise_for_status()
+                    verify_data = verify_response.json()
+                    flow_token = verify_data["flow_token"]
+                    print(f"[LOGIN] ✓ 邮箱验证已提交")
+                
+                # 步骤 4: 提交密码
+                print("[LOGIN] 步骤 4: 提交密码...")
+                password_response = await client.post(
+                    "https://api.twitter.com/1.1/onboarding/task.json",
+                    headers={
+                        "authorization": "Bearer AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA",
+                        "x-guest-token": guest_token,
+                        "content-type": "application/json"
+                    },
+                    json={
+                        "flow_token": flow_token,
+                        "subtask_inputs": [
+                            {
+                                "subtask_id": "LoginEnterPassword",
+                                "enter_password": {
+                                    "password": request.password,
+                                    "link": "next_link"
+                                }
+                            }
+                        ]
+                    }
+                )
+                password_response.raise_for_status()
+                password_data = password_response.json()
+                print(f"[LOGIN] ✓ 密码已提交")
+                
+                # 步骤 5: 检查登录结果并提取 cookies
+                print("[LOGIN] 步骤 5: 提取认证 cookies...")
+                
+                # 从响应的 cookies 中提取
+                for cookie in client.cookies.jar:
+                    app_state.cookies[cookie.name] = cookie.value
+                    print(f"[LOGIN]   - {cookie.name} (domain: {cookie.domain})")
+                
+                # 检查是否获取到必要的 cookies
                 auth_keys = ['auth_token', 'auth', 'kdt', 'twid']
                 csrf_keys = ['ct0', 'csrf_token', 'x-csrf-token']
                 
@@ -144,253 +260,53 @@ def create_web_app(settings: Settings) -> FastAPI:
                 for key in auth_keys:
                     if key in app_state.cookies:
                         found_auth = key
-                        print(f"[LOGIN] ✓ 找到认证 token: {key} = {app_state.cookies[key][:20]}...")
+                        print(f"[LOGIN] ✓ 找到认证 token: {key}")
                         break
                 
                 for key in csrf_keys:
                     if key in app_state.cookies:
                         found_csrf = key
-                        print(f"[LOGIN] ✓ 找到 CSRF token: {key} = {app_state.cookies[key][:20]}...")
+                        print(f"[LOGIN] ✓ 找到 CSRF token: {key}")
                         break
                 
-                if not found_auth:
-                    print(f"[LOGIN] ✗ 未找到认证 token (尝试了: {auth_keys})")
-                if not found_csrf:
-                    print(f"[LOGIN] ✗ 未找到 CSRF token (尝试了: {csrf_keys})")
+                if not found_auth or not found_csrf:
+                    print(f"[LOGIN] ✗ 缺少必要的认证信息")
+                    print(f"[LOGIN] 所有 cookie 名称: {list(app_state.cookies.keys())}")
+                    raise Exception("登录失败：未能获取到有效的认证 token")
                 
-                # 打印所有 cookie 名称用于调试
-                print(f"[LOGIN] 所有 cookie 名称: {list(app_state.cookies.keys())}")
+                # 保存登录状态
+                print(f"[LOGIN] 保存登录状态到: {storage_state_path}")
+                storage_state_path.parent.mkdir(parents=True, exist_ok=True)
                 
-                # 检查是否真的登录成功
-                if not found_auth:
-                    print("[LOGIN] ✗ 登录状态已失效，缺少认证 token")
-                    # 删除失效的登录状态文件
-                    if storage_state_path.exists():
-                        storage_state_path.unlink()
-                        print(f"[LOGIN] 已删除失效的登录状态文件: {storage_state_path}")
-                    
-                    return JSONResponse(
-                        status_code=401,
-                        content={
-                            "success": False, 
-                            "message": "登录状态已失效，请重新输入用户名和密码登录",
-                            "need_relogin": True
+                storage_data = {
+                    "cookies": [
+                        {
+                            "name": name,
+                            "value": value,
+                            "domain": ".twitter.com",
+                            "path": "/"
                         }
-                    )
+                        for name, value in app_state.cookies.items()
+                    ]
+                }
+                
+                with open(storage_state_path, 'w') as f:
+                    json.dump(storage_data, f, indent=2)
                 
                 app_state.is_logged_in = True
-                
-                # 保存截图确认
-                try:
-                    await app_state.page.screenshot(path="debug_login_success.png")
-                    print("[LOGIN] 已保存登录成功截图")
-                except:
-                    pass
-                
-                return {"success": True, "message": "使用已保存的登录状态"}
-            
-            # 执行登录流程
-            print("[LOGIN] 开始执行登录流程...")
-            # 尝试 x.com 或 twitter.com
-            try:
-                await app_state.page.goto("https://x.com/i/flow/login", wait_until="networkidle")
-            except:
-                await app_state.page.goto("https://twitter.com/i/flow/login", wait_until="networkidle")
-            
-            await asyncio.sleep(3)
-            
-            # 保存登录页面截图
-            try:
-                await app_state.page.screenshot(path="debug_login_page.png")
-                print("[LOGIN] 已保存登录页面截图: debug_login_page.png")
-            except:
-                pass
-            
-            # 输入用户名 - 尝试多种选择器
-            print("[LOGIN] 等待用户名输入框...")
-            username_input = None
-            selectors = [
-                'input[name="text"]',
-                'input[autocomplete="username"]',
-                'input[type="text"]',
-                'input[name="session[username_or_email]"]'
-            ]
-            
-            for selector in selectors:
-                try:
-                    print(f"[LOGIN] 尝试选择器: {selector}")
-                    await app_state.page.wait_for_selector(selector, timeout=5000)
-                    username_input = selector
-                    print(f"[LOGIN] ✓ 找到用户名输入框: {selector}")
-                    break
-                except Exception as e:
-                    print(f"[LOGIN] 选择器 {selector} 失败: {e}")
-                    continue
-            
-            if not username_input:
-                raise Exception("找不到用户名输入框，请检查 Twitter 登录页面是否改版")
-            
-            print(f"[LOGIN] 输入用户名: {request.username}")
-            await app_state.page.fill(username_input, request.username)
-            
-            # 点击下一步按钮
-            print("[LOGIN] 点击下一步...")
-            next_button_selectors = [
-                'div[role="button"][data-testid="LoginForm_Login_Button"]',
-                'button:has-text("Next")',
-                'div[role="button"]:has-text("Next")',
-                'button[type="button"]'
-            ]
-            
-            for selector in next_button_selectors:
-                try:
-                    await app_state.page.click(selector, timeout=3000)
-                    print(f"[LOGIN] ✓ 点击了按钮: {selector}")
-                    break
-                except:
-                    continue
-            
-            await asyncio.sleep(3)
-            
-            # 保存中间页面截图
-            try:
-                await app_state.page.screenshot(path="debug_login_step2.png")
-                print("[LOGIN] 已保存第二步截图: debug_login_step2.png")
-            except:
-                pass
-            
-            # 处理可能的用户名确认
-            print("[LOGIN] 检查是否需要邮箱验证...")
-            try:
-                await app_state.page.wait_for_selector('input[name="text"]', timeout=3000)
-                value = request.email or request.username
-                print(f"[LOGIN] 需要邮箱验证，输入: {value}")
-                await app_state.page.fill('input[name="text"]', value)
-                await app_state.page.click('div[role="button"][data-testid="ocfEnterTextNextButton"]')
-                await asyncio.sleep(3)
-            except Exception as e:
-                print(f"[LOGIN] 无需邮箱验证")
-            
-            # 输入密码
-            print("[LOGIN] 等待密码输入框...")
-            password_input = None
-            password_selectors = [
-                'input[name="password"]',
-                'input[type="password"]',
-                'input[autocomplete="current-password"]'
-            ]
-            
-            for selector in password_selectors:
-                try:
-                    print(f"[LOGIN] 尝试密码选择器: {selector}")
-                    await app_state.page.wait_for_selector(selector, timeout=5000)
-                    password_input = selector
-                    print(f"[LOGIN] ✓ 找到密码输入框: {selector}")
-                    break
-                except Exception as e:
-                    print(f"[LOGIN] 密码选择器 {selector} 失败: {e}")
-                    continue
-            
-            if not password_input:
-                raise Exception("找不到密码输入框")
-            
-            print("[LOGIN] 输入密码...")
-            await app_state.page.fill(password_input, request.password)
-            
-            # 点击登录按钮
-            print("[LOGIN] 点击登录按钮...")
-            login_button_selectors = [
-                'div[data-testid="LoginForm_Login_Button"]',
-                'button:has-text("Log in")',
-                'div[role="button"]:has-text("Log in")',
-                'button[type="button"]'
-            ]
-            
-            for selector in login_button_selectors:
-                try:
-                    await app_state.page.click(selector, timeout=3000)
-                    print(f"[LOGIN] ✓ 点击了登录按钮: {selector}")
-                    break
-                except:
-                    continue
-            
-            # 等待登录完成
-            print("[LOGIN] 等待登录完成...")
-            try:
-                await app_state.page.wait_for_url("*://*/home*", timeout=30000)
-            except:
-                # 可能重定向到 x.com 或 twitter.com
-                pass
-            
-            # 额外等待确保页面加载完成
-            await asyncio.sleep(3)
-            
-            # 检查是否真的到了 home 页面
-            final_url = app_state.page.url
-            print(f"[LOGIN] 登录后 URL: {final_url}")
-            
-            if "login" in final_url:
-                raise Exception("登录失败，仍在登录页面")
-            
-            # 额外等待确保页面加载完成
-            await asyncio.sleep(2)
-            
-            # 提取 cookies 用于 API 调用
-            print("[LOGIN] 提取 cookies...")
-            all_cookies = await app_state.context.cookies([
-                "https://x.com",
-                "https://twitter.com",
-                "https://api.x.com",
-                "https://api.twitter.com"
-            ])
-            print(f"[LOGIN] 获取到 {len(all_cookies)} 个 cookies")
-            
-            for cookie in all_cookies:
-                app_state.cookies[cookie['name']] = cookie['value']
-                print(f"[LOGIN]   - {cookie['name']} (domain: {cookie.get('domain', 'N/A')})")
-            
-            # 检查多种可能的认证 token 名称
-            auth_keys = ['auth_token', 'auth', 'kdt', 'twid']
-            csrf_keys = ['ct0', 'csrf_token', 'x-csrf-token']
-            
-            found_auth = None
-            found_csrf = None
-            
-            for key in auth_keys:
-                if key in app_state.cookies:
-                    found_auth = key
-                    print(f"[LOGIN] ✓ 找到认证 token: {key} = {app_state.cookies[key][:20]}...")
-                    break
-            
-            for key in csrf_keys:
-                if key in app_state.cookies:
-                    found_csrf = key
-                    print(f"[LOGIN] ✓ 找到 CSRF token: {key} = {app_state.cookies[key][:20]}...")
-                    break
-            
-            if not found_auth:
-                print(f"[LOGIN] ✗ 未找到认证 token (尝试了: {auth_keys})")
-            if not found_csrf:
-                print(f"[LOGIN] ✗ 未找到 CSRF token (尝试了: {csrf_keys})")
-            
-            # 打印所有 cookie 名称用于调试
-            print(f"[LOGIN] 所有 cookie 名称: {list(app_state.cookies.keys())}")
-            
-            # 保存登录状态
-            print(f"[LOGIN] 保存登录状态到: {storage_state_path}")
-            await app_state.context.storage_state(path=str(storage_state_path))
-            app_state.is_logged_in = True
-            
-            # 保存截图确认
-            try:
-                await app_state.page.screenshot(path="debug_login_new.png")
-                print("[LOGIN] 已保存新登录截图")
-            except:
-                pass
-            
-            print("[LOGIN] ✓ 登录成功！")
-            return {"success": True, "message": "登录成功"}
+                print("[LOGIN] ✓ 登录成功！")
+                return {"success": True, "message": "登录成功"}
         
+        except httpx.HTTPStatusError as e:
+            error_msg = f"API 请求失败: {e.response.status_code}"
+            print(f"[LOGIN] ✗ {error_msg}")
+            print(f"[LOGIN] 响应内容: {e.response.text[:500]}")
+            import traceback
+            traceback.print_exc()
+            return JSONResponse(
+                status_code=400,
+                content={"success": False, "message": error_msg}
+            )
         except Exception as e:
             error_msg = f"登录失败: {str(e)}"
             print(f"[LOGIN] ✗ {error_msg}")
