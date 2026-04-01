@@ -117,13 +117,25 @@ def create_web_app(settings: Settings) -> FastAPI:
                 # 提取 cookies
                 print("[LOGIN] 提取 cookies...")
                 cookies = await app_state.context.cookies()
+                print(f"[LOGIN] 获取到 {len(cookies)} 个 cookies")
+                
                 for cookie in cookies:
                     app_state.cookies[cookie['name']] = cookie['value']
+                    # 打印 cookie 名称（不打印值以保护隐私）
+                    print(f"[LOGIN]   - {cookie['name']}")
                 
                 if 'auth_token' in app_state.cookies:
-                    print(f"[LOGIN] ✓ 找到 auth_token")
+                    print(f"[LOGIN] ✓ 找到 auth_token: {app_state.cookies['auth_token'][:20]}...")
+                else:
+                    print(f"[LOGIN] ✗ 未找到 auth_token")
+                    
                 if 'ct0' in app_state.cookies:
-                    print(f"[LOGIN] ✓ 找到 ct0 (CSRF token)")
+                    print(f"[LOGIN] ✓ 找到 ct0 (CSRF token): {app_state.cookies['ct0'][:20]}...")
+                else:
+                    print(f"[LOGIN] ✗ 未找到 ct0")
+                
+                # 打印所有 cookie 名称用于调试
+                print(f"[LOGIN] 所有 cookie 名称: {list(app_state.cookies.keys())}")
                 
                 app_state.is_logged_in = True
                 
@@ -175,14 +187,25 @@ def create_web_app(settings: Settings) -> FastAPI:
             # 提取 cookies 用于 API 调用
             print("[LOGIN] 提取 cookies...")
             cookies = await app_state.context.cookies()
+            print(f"[LOGIN] 获取到 {len(cookies)} 个 cookies")
+            
             for cookie in cookies:
                 app_state.cookies[cookie['name']] = cookie['value']
+                print(f"[LOGIN]   - {cookie['name']}")
             
             # 打印关键 cookies（用于调试）
             if 'auth_token' in app_state.cookies:
-                print(f"[LOGIN] ✓ 找到 auth_token")
+                print(f"[LOGIN] ✓ 找到 auth_token: {app_state.cookies['auth_token'][:20]}...")
+            else:
+                print(f"[LOGIN] ✗ 未找到 auth_token")
+                
             if 'ct0' in app_state.cookies:
-                print(f"[LOGIN] ✓ 找到 ct0 (CSRF token)")
+                print(f"[LOGIN] ✓ 找到 ct0 (CSRF token): {app_state.cookies['ct0'][:20]}...")
+            else:
+                print(f"[LOGIN] ✗ 未找到 ct0")
+            
+            # 打印所有 cookie 名称用于调试
+            print(f"[LOGIN] 所有 cookie 名称: {list(app_state.cookies.keys())}")
             
             # 保存登录状态
             print(f"[LOGIN] 保存登录状态到: {storage_state_path}")
@@ -213,7 +236,14 @@ def create_web_app(settings: Settings) -> FastAPI:
     async def fetch_bookmarks_via_api(limit: int = 50) -> List[Dict[str, Any]]:
         """使用 Twitter API 获取书签"""
         print(f"[API] 使用 Twitter API 获取书签，限制: {limit}")
+        print(f"[API] 当前 cookies 数量: {len(app_state.cookies)}")
+        print(f"[API] Cookie 名称: {list(app_state.cookies.keys())}")
         
+        if not app_state.cookies.get('auth_token'):
+            print(f"[API] ✗ 缺少 auth_token")
+        if not app_state.cookies.get('ct0'):
+            print(f"[API] ✗ 缺少 ct0")
+            
         if not app_state.cookies.get('auth_token') or not app_state.cookies.get('ct0'):
             raise Exception("缺少必要的 cookies (auth_token 或 ct0)")
         
