@@ -18,6 +18,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from playwright.async_api import async_playwright, Browser, BrowserContext, Page
 from yt_dlp import YoutubeDL
+import httpx
 
 from .config import Settings
 from .history import load_history, save_history
@@ -33,6 +34,7 @@ class AppState:
         self.is_logged_in = False
         self.bookmarks: List[Dict[str, Any]] = []
         self.download_tasks: Dict[str, Dict[str, Any]] = {}
+        self.cookies: Dict[str, str] = {}  # 存储 Twitter cookies
 
 
 app_state = AppState()
@@ -111,6 +113,18 @@ def create_web_app(settings: Settings) -> FastAPI:
             
             if "login" not in current_url and "home" in current_url:
                 print("[LOGIN] ✓ 使用已保存的登录状态成功")
+                
+                # 提取 cookies
+                print("[LOGIN] 提取 cookies...")
+                cookies = await app_state.context.cookies()
+                for cookie in cookies:
+                    app_state.cookies[cookie['name']] = cookie['value']
+                
+                if 'auth_token' in app_state.cookies:
+                    print(f"[LOGIN] ✓ 找到 auth_token")
+                if 'ct0' in app_state.cookies:
+                    print(f"[LOGIN] ✓ 找到 ct0 (CSRF token)")
+                
                 app_state.is_logged_in = True
                 
                 # 保存截图确认
@@ -158,6 +172,18 @@ def create_web_app(settings: Settings) -> FastAPI:
             # 额外等待确保页面加载完成
             await asyncio.sleep(2)
             
+            # 提取 cookies 用于 API 调用
+            print("[LOGIN] 提取 cookies...")
+            cookies = await app_state.context.cookies()
+            for cookie in cookies:
+                app_state.cookies[cookie['name']] = cookie['value']
+            
+            # 打印关键 cookies（用于调试）
+            if 'auth_token' in app_state.cookies:
+                print(f"[LOGIN] ✓ 找到 auth_token")
+            if 'ct0' in app_state.cookies:
+                print(f"[LOGIN] ✓ 找到 ct0 (CSRF token)")
+            
             # 保存登录状态
             print(f"[LOGIN] 保存登录状态到: {storage_state_path}")
             await app_state.context.storage_state(path=str(storage_state_path))
@@ -182,6 +208,145 @@ def create_web_app(settings: Settings) -> FastAPI:
                 status_code=400,
                 content={"success": False, "message": error_msg}
             )
+
+
+    async def fetch_bookmarks_via_api(limit: int = 50) -> List[Dict[str, Any]]:
+        """使用 Twitter API 获取书签"""
+        print(f"[API] 使用 Twitter API 获取书签，限制: {limit}")
+        
+        if not app_state.cookies.get('auth_token') or not app_state.cookies.get('ct0'):
+            raise Exception("缺少必要的 cookies (auth_token 或 ct0)")
+        
+        # Twitter GraphQL API endpoint
+        url = "https://twitter.com/i/api/graphql/3XDB26fBve-MmjHaWTUZBQ/Bookmarks"
+        
+        headers = {
+            "authorization": "Bearer AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA",
+            "x-csrf-token": app_state.cookies.get('ct0', ''),
+            "x-twitter-auth-type": "OAuth2Session",
+            "x-twitter-active-user": "yes",
+            "cookie": "; ".join([f"{k}={v}" for k, v in app_state.cookies.items()]),
+        }
+        
+        variables = {
+            "count": limit,
+            "includePromotedContent": False
+        }
+        
+        features = {
+            "graphql_timeline_v2_bookmark_timeline": True,
+            "responsive_web_graphql_exclude_directive_enabled": True,
+            "verified_phone_label_enabled": False,
+            "creator_subscriptions_tweet_preview_api_enabled": True,
+            "responsive_web_graphql_timeline_navigation_enabled": True,
+            "responsive_web_graphql_skip_user_profile_image_extensions_enabled": False,
+            "c9s_tweet_anatomy_moderator_badge_enabled": True,
+            "tweetypie_unmention_optimization_enabled": True,
+            "responsive_web_edit_tweet_api_enabled": True,
+            "graphql_is_translatable_rweb_tweet_is_translatable_enabled": True,
+            "view_counts_everywhere_api_enabled": True,
+            "longform_notetweets_consumption_enabled": True,
+            "responsive_web_twitter_article_tweet_consumption_enabled": True,
+            "tweet_awards_web_tipping_enabled": False,
+            "freedom_of_speech_not_reach_fetch_enabled": True,
+            "standardized_nudges_misinfo": True,
+            "tweet_with_visibility_results_prefer_gql_limited_actions_policy_enabled": True,
+            "rweb_video_timestamps_enabled": True,
+            "longform_notetweets_rich_text_read_enabled": True,
+            "longform_notetweets_inline_media_enabled": True,
+            "responsive_web_media_download_video_enabled": False,
+            "responsive_web_enhance_cards_enabled": False
+        }
+        
+        params = {
+            "variables": json.dumps(variables),
+            "features": json.dumps(features)
+        }
+        
+        bookmarks = []
+        
+        async with httpx.AsyncClient() as client:
+            try:
+                print(f"[API] 发送请求到 Twitter API...")
+                response = await client.get(url, headers=headers, params=params, timeout=30.0)
+                response.raise_for_status()
+                
+                data = response.json()
+                print(f"[API] ✓ 收到响应")
+                
+                # 解析响应
+                instructions = data.get("data", {}).get("bookmark_timeline_v2", {}).get("timeline", {}).get("instructions", [])
+                
+                for instruction in instructions:
+                    if instruction.get("type") == "TimelineAddEntries":
+                        entries = instruction.get("entries", [])
+                        
+                        for entry in entries:
+                            if entry.get("entryId", "").startswith("tweet-"):
+                                content = entry.get("content", {})
+                                item_content = content.get("itemContent", {})
+                                tweet_results = item_content.get("tweet_results", {}).get("result", {})
+                                
+                                if not tweet_results:
+                                    continue
+                                
+                                legacy = tweet_results.get("legacy", {})
+                                user = tweet_results.get("core", {}).get("user_results", {}).get("result", {}).get("legacy", {})
+                                
+                                tweet_id = legacy.get("id_str", "")
+                                text = legacy.get("full_text", "")
+                                author = user.get("screen_name", "Unknown")
+                                
+                                # 检查是否有视频
+                                media = legacy.get("extended_entities", {}).get("media", [])
+                                has_video = False
+                                video_url = None
+                                thumbnail = None
+                                
+                                for m in media:
+                                    if m.get("type") in ["video", "animated_gif"]:
+                                        has_video = True
+                                        thumbnail = m.get("media_url_https")
+                                        # 获取最高质量的视频
+                                        variants = m.get("video_info", {}).get("variants", [])
+                                        max_bitrate = 0
+                                        for variant in variants:
+                                            if variant.get("content_type") == "video/mp4":
+                                                bitrate = variant.get("bitrate", 0)
+                                                if bitrate > max_bitrate:
+                                                    max_bitrate = bitrate
+                                                    video_url = variant.get("url")
+                                        break
+                                
+                                if has_video and video_url:
+                                    bookmarks.append({
+                                        "id": tweet_id,
+                                        "url": f"https://twitter.com/i/status/{tweet_id}",
+                                        "text": text[:200],
+                                        "author": author,
+                                        "hasVideo": True,
+                                        "videoUrl": video_url,
+                                        "thumbnail": thumbnail
+                                    })
+                                    
+                                    if len(bookmarks) >= limit:
+                                        break
+                        
+                        if len(bookmarks) >= limit:
+                            break
+                
+                print(f"[API] ✓ 解析到 {len(bookmarks)} 条包含视频的书签")
+                return bookmarks
+                
+            except httpx.HTTPStatusError as e:
+                print(f"[API] ✗ HTTP 错误: {e.response.status_code}")
+                print(f"[API] 响应内容: {e.response.text[:500]}")
+                raise Exception(f"Twitter API 请求失败: {e.response.status_code}")
+            except Exception as e:
+                print(f"[API] ✗ 错误: {str(e)}")
+                import traceback
+                traceback.print_exc()
+                raise
 
 
     @app.get("/api/bookmarks")
@@ -642,6 +807,10 @@ WEB_UI_HTML = """<!DOCTYPE html>
                     <input type="text" id="username" placeholder="用户名" />
                     <input type="password" id="password" placeholder="密码" />
                     <input type="text" id="email" placeholder="邮箱（可选，用于验证）" />
+                    <label style="display: flex; align-items: center; gap: 8px; margin: 10px 0;">
+                        <input type="checkbox" id="rememberMe" checked />
+                        <span>记住用户名和密码</span>
+                    </label>
                     <button onclick="login()">登录</button>
                 </div>
             </div>
@@ -674,10 +843,41 @@ WEB_UI_HTML = """<!DOCTYPE html>
         let bookmarks = [];
         let downloadTaskId = null;
 
+        // 页面加载时恢复保存的用户名和密码
+        window.addEventListener('DOMContentLoaded', () => {
+            const savedUsername = localStorage.getItem('twitter_username');
+            const savedPassword = localStorage.getItem('twitter_password');
+            const savedEmail = localStorage.getItem('twitter_email');
+            
+            if (savedUsername) {
+                document.getElementById('username').value = savedUsername;
+            }
+            if (savedPassword) {
+                document.getElementById('password').value = savedPassword;
+            }
+            if (savedEmail) {
+                document.getElementById('email').value = savedEmail;
+            }
+        });
+
         async function login() {
             const username = document.getElementById('username').value;
             const password = document.getElementById('password').value;
             const email = document.getElementById('email').value;
+            const rememberMe = document.getElementById('rememberMe').checked;
+
+            // 保存或清除用户名密码
+            if (rememberMe) {
+                localStorage.setItem('twitter_username', username);
+                localStorage.setItem('twitter_password', password);
+                if (email) {
+                    localStorage.setItem('twitter_email', email);
+                }
+            } else {
+                localStorage.removeItem('twitter_username');
+                localStorage.removeItem('twitter_password');
+                localStorage.removeItem('twitter_email');
+            }
 
             
             if (!username || !password) {
