@@ -1,6 +1,6 @@
 # 快速开始指南
 
-## 🚀 在服务器上部署
+## 🚀 在服务器上部署（Python 3.8+）
 
 ### 步骤 1: 拉取最新代码
 
@@ -9,25 +9,26 @@ cd /path/to/xDownload
 git pull origin master
 ```
 
-### 步骤 2: 升级 Python（仅首次需要）
-
-```bash
-./upgrade_python.sh
-```
-
-### 步骤 3: 清理旧环境
+### 步骤 2: 清理旧环境
 
 ```bash
 rm -rf .venv
 ```
 
-### 步骤 4: 启动应用
+### 步骤 3: 启动应用
 
 ```bash
 ./start_web.sh
 ```
 
 应用将在 `http://your-server-ip:10000` 上运行。
+
+## ✅ 系统要求
+
+- Python 3.8 或更高版本（无需升级到 3.10）
+- Ubuntu 20.04 / Debian / CentOS 等 Linux 系统
+- 至少 512MB 内存
+- 稳定的网络连接
 
 ## 📝 使用说明
 
@@ -89,8 +90,8 @@ curl http://localhost:10000/api/status
 ### 问题：Python 版本不对
 
 ```bash
-python3.10 --version
-# 如果没有 3.10，运行: ./upgrade_python.sh
+python3 --version
+# 应该是 3.8 或更高版本
 ```
 
 ### 问题：依赖安装失败
@@ -118,7 +119,6 @@ kill <PID>
 
 ## 📚 更多文档
 
-- [Python 升级指南](UPGRADE_PYTHON.md) - 详细的 Python 升级步骤
 - [README.md](README.md) - 完整的项目文档
 
 ## 💡 提示
@@ -127,3 +127,11 @@ kill <PID>
 2. 下载的视频会自动去重，不会重复下载
 3. 支持最多 3 次重试，提高下载成功率
 4. 可以同时选择多个视频批量下载
+
+## 🎉 新特性
+
+- ✅ 支持 Python 3.8+（无需升级到 3.10）
+- ✅ 使用 twikit 库，更稳定可靠
+- ✅ 异步 API，性能更好
+- ✅ 简化的登录流程
+- ✅ 自动保存和恢复登录状态
