@@ -53,7 +53,7 @@ def download_bookmarks(
     history_file.parent.mkdir(parents=True, exist_ok=True)
 
     with sync_playwright() as pw:
-        browser = pw.firefox.launch(headless=headless)
+        browser = pw.chromium.launch(headless=headless)
         context_kwargs = {}
         if storage_exists(storage_state):
             context_kwargs["storage_state"] = str(storage_state)
