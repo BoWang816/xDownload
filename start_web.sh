@@ -8,23 +8,19 @@ echo "启动 Twitter 书签下载器 Web 应用"
 echo "=========================================="
 
 # 检测 Python 命令
-if command -v python3.10 &> /dev/null; then
-    PYTHON_CMD="python3.10"
-    echo "✓ 使用 Python 3.10"
-elif command -v python3 &> /dev/null; then
+if command -v python3 &> /dev/null; then
     PYTHON_VERSION=$(python3 --version 2>&1 | awk '{print $2}')
     PYTHON_MAJOR=$(echo $PYTHON_VERSION | cut -d. -f1)
     PYTHON_MINOR=$(echo $PYTHON_VERSION | cut -d. -f2)
     
-    if [ "$PYTHON_MAJOR" -ge 3 ] && [ "$PYTHON_MINOR" -ge 10 ]; then
+    if [ "$PYTHON_MAJOR" -ge 3 ] && [ "$PYTHON_MINOR" -ge 8 ]; then
         PYTHON_CMD="python3"
         echo "✓ 使用 Python $PYTHON_VERSION"
     else
-        echo "✗ 错误: 需要 Python 3.10 或更高版本"
+        echo "✗ 错误: 需要 Python 3.8 或更高版本"
         echo "当前版本: Python $PYTHON_VERSION"
         echo ""
-        echo "请运行以下命令升级 Python:"
-        echo "  ./upgrade_python.sh"
+        echo "请升级 Python 到 3.8 或更高版本"
         exit 1
     fi
 elif command -v python &> /dev/null; then
@@ -32,15 +28,14 @@ elif command -v python &> /dev/null; then
     PYTHON_MAJOR=$(echo $PYTHON_VERSION | cut -d. -f1)
     PYTHON_MINOR=$(echo $PYTHON_VERSION | cut -d. -f2)
     
-    if [ "$PYTHON_MAJOR" -ge 3 ] && [ "$PYTHON_MINOR" -ge 10 ]; then
+    if [ "$PYTHON_MAJOR" -ge 3 ] && [ "$PYTHON_MINOR" -ge 8 ]; then
         PYTHON_CMD="python"
         echo "✓ 使用 Python $PYTHON_VERSION"
     else
-        echo "✗ 错误: 需要 Python 3.10 或更高版本"
+        echo "✗ 错误: 需要 Python 3.8 或更高版本"
         echo "当前版本: Python $PYTHON_VERSION"
         echo ""
-        echo "请运行以下命令升级 Python:"
-        echo "  ./upgrade_python.sh"
+        echo "请升级 Python 到 3.8 或更高版本"
         exit 1
     fi
 else
