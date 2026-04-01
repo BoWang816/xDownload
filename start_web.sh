@@ -1,43 +1,84 @@
 #!/bin/bash
-# 快速启动 Web 应用
+# 启动 Twitter 书签下载器 Web 应用
 
-echo "🚀 启动 Twitter 书签下载器 Web 应用..."
-echo ""
+set -e
 
-# 检查 Python 命令
-if command -v python3 &> /dev/null; then
-    PYTHON_CMD=python3
+echo "=========================================="
+echo "启动 Twitter 书签下载器 Web 应用"
+echo "=========================================="
+
+# 检测 Python 命令
+if command -v python3.10 &> /dev/null; then
+    PYTHON_CMD="python3.10"
+    echo "✓ 使用 Python 3.10"
+elif command -v python3 &> /dev/null; then
+    PYTHON_VERSION=$(python3 --version 2>&1 | awk '{print $2}')
+    PYTHON_MAJOR=$(echo $PYTHON_VERSION | cut -d. -f1)
+    PYTHON_MINOR=$(echo $PYTHON_VERSION | cut -d. -f2)
+    
+    if [ "$PYTHON_MAJOR" -ge 3 ] && [ "$PYTHON_MINOR" -ge 10 ]; then
+        PYTHON_CMD="python3"
+        echo "✓ 使用 Python $PYTHON_VERSION"
+    else
+        echo "✗ 错误: 需要 Python 3.10 或更高版本"
+        echo "当前版本: Python $PYTHON_VERSION"
+        echo ""
+        echo "请运行以下命令升级 Python:"
+        echo "  ./upgrade_python.sh"
+        exit 1
+    fi
 elif command -v python &> /dev/null; then
-    PYTHON_CMD=python
+    PYTHON_VERSION=$(python --version 2>&1 | awk '{print $2}')
+    PYTHON_MAJOR=$(echo $PYTHON_VERSION | cut -d. -f1)
+    PYTHON_MINOR=$(echo $PYTHON_VERSION | cut -d. -f2)
+    
+    if [ "$PYTHON_MAJOR" -ge 3 ] && [ "$PYTHON_MINOR" -ge 10 ]; then
+        PYTHON_CMD="python"
+        echo "✓ 使用 Python $PYTHON_VERSION"
+    else
+        echo "✗ 错误: 需要 Python 3.10 或更高版本"
+        echo "当前版本: Python $PYTHON_VERSION"
+        echo ""
+        echo "请运行以下命令升级 Python:"
+        echo "  ./upgrade_python.sh"
+        exit 1
+    fi
 else
-    echo "❌ 错误：未找到 Python 解释器"
-    echo "请安装 Python 3.11 或更高版本"
+    echo "✗ 错误: 未找到 Python"
     exit 1
 fi
 
-echo "✓ 使用 Python: $PYTHON_CMD"
-
 # 检查虚拟环境
 if [ ! -d ".venv" ]; then
-    echo "⚠️  未找到虚拟环境，正在创建..."
+    echo ""
+    echo "未找到虚拟环境，正在创建..."
     $PYTHON_CMD -m venv .venv
+    echo "✓ 虚拟环境创建完成"
 fi
 
 # 激活虚拟环境
+echo "激活虚拟环境..."
 source .venv/bin/activate
 
-# 安装依赖
-echo "📦 检查依赖..."
-pip install -q -r requirements.txt
-pip install -q -e .
+# 检查是否需要安装依赖
+if [ ! -f ".venv/installed" ]; then
+    echo ""
+    echo "正在安装依赖..."
+    pip install --upgrade pip
+    pip install -r requirements.txt
+    touch .venv/installed
+    echo "✓ 依赖安装完成"
+fi
 
-# 安装 Playwright 浏览器
-echo "🌐 检查 Playwright 浏览器..."
-playwright install chromium
+# 创建必要的目录
+mkdir -p downloads
+mkdir -p .twitter_state
 
 echo ""
-echo "✅ 准备完成！"
+echo "=========================================="
+echo "✓ 启动应用..."
+echo "=========================================="
 echo ""
 
-# 启动应用（使用简单脚本）
+# 启动应用
 $PYTHON_CMD run_web.py
