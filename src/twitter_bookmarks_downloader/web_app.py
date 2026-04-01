@@ -353,142 +353,15 @@ def create_web_app(settings: Settings) -> FastAPI:
     async def get_bookmarks(limit: int = 50):
         """获取书签列表"""
         print(f"[BOOKMARKS] 开始获取书签，限制: {limit}")
-        if not app_state.is_logged_in or not app_state.page:
+        if not app_state.is_logged_in:
             print("[BOOKMARKS] ✗ 未登录")
             raise HTTPException(status_code=401, detail="请先登录")
         
         try:
-            print("[BOOKMARKS] 导航到书签页面...")
-            await app_state.page.goto("https://twitter.com/i/bookmarks", wait_until="networkidle")
+            # 使用 Twitter API 获取书签
+            bookmarks = await fetch_bookmarks_via_api(limit)
+            app_state.bookmarks = bookmarks
             
-            # 等待页面加载完成
-            print("[BOOKMARKS] 等待推文加载...")
-            await asyncio.sleep(3)
-            
-            # 检查当前 URL
-            current_url = app_state.page.url
-            print(f"[BOOKMARKS] 当前 URL: {current_url}")
-            
-            # 如果被重定向到登录页，说明登录状态失效
-            if "login" in current_url:
-                print("[BOOKMARKS] ✗ 登录状态已失效，请重新登录")
-                app_state.is_logged_in = False
-                raise HTTPException(status_code=401, detail="登录状态已失效，请重新登录")
-            
-            # 保存截图用于调试
-            try:
-                screenshot_path = "debug_bookmarks.png"
-                await app_state.page.screenshot(path=screenshot_path)
-                print(f"[BOOKMARKS] 已保存截图到: {screenshot_path}")
-            except Exception as e:
-                print(f"[BOOKMARKS] 截图失败: {e}")
-            
-            # 获取页面标题
-            try:
-                title = await app_state.page.title()
-                print(f"[BOOKMARKS] 页面标题: {title}")
-            except Exception as e:
-                print(f"[BOOKMARKS] 获取标题失败: {e}")
-            
-            # 等待至少有一个推文出现
-            try:
-                await app_state.page.wait_for_selector('article[data-testid="tweet"]', timeout=10000)
-                print("[BOOKMARKS] ✓ 找到推文元素")
-            except Exception as e:
-                print(f"[BOOKMARKS] ⚠️  未找到推文元素: {e}")
-                
-                # 尝试查找其他可能的选择器
-                print("[BOOKMARKS] 尝试查找其他元素...")
-                try:
-                    # 检查是否有 "暂无书签" 的提示
-                    empty_state = await app_state.page.query_selector('text="You haven\'t added any posts to your Bookmarks yet"')
-                    if empty_state:
-                        print("[BOOKMARKS] ℹ️  书签为空")
-                        return {"success": True, "bookmarks": []}
-                    
-                    # 检查是否有其他文章元素
-                    articles = await app_state.page.query_selector_all('article')
-                    print(f"[BOOKMARKS] 找到 {len(articles)} 个 article 元素")
-                    
-                    # 打印页面的部分 HTML 用于调试
-                    html_sample = await app_state.page.evaluate("() => document.body.innerHTML.substring(0, 500)")
-                    print(f"[BOOKMARKS] 页面 HTML 示例: {html_sample}")
-                    
-                except Exception as debug_error:
-                    print(f"[BOOKMARKS] 调试信息获取失败: {debug_error}")
-            
-            bookmarks = []
-            seen_ids = set()
-            scroll_attempts = 0
-            max_scrolls = 20
-            
-            while len(bookmarks) < limit and scroll_attempts < max_scrolls:
-                print(f"[BOOKMARKS] 滚动尝试 {scroll_attempts + 1}/{max_scrolls}，已收集 {len(bookmarks)} 条")
-                
-                # 等待页面稳定
-                await asyncio.sleep(1)
-                
-                # 提取推文信息
-                try:
-                    tweets = await app_state.page.evaluate("""
-                        () => {
-                            const articles = document.querySelectorAll('article[data-testid="tweet"]');
-                            return Array.from(articles).map(article => {
-                                const link = article.querySelector('a[href*="/status/"]');
-                                const text = article.querySelector('[data-testid="tweetText"]');
-                                const user = article.querySelector('[data-testid="User-Name"]');
-                                const video = article.querySelector('video');
-                                const images = article.querySelectorAll('img[src*="media"]');
-                                
-                                if (!link) return null;
-                                
-                            const url = link.href.split('?')[0];
-                            const match = url.match(/\\/status\\/(\\d+)/);
-                            if (!match) return null;
-
-                            
-                            return {
-                                id: match[1],
-                                url: url,
-                                text: text ? text.textContent : '',
-                                author: user ? user.textContent.split('@')[0].trim() : 'Unknown',
-                                hasVideo: !!video,
-                                hasImages: images.length > 0,
-                                imageCount: images.length,
-                                thumbnail: video ? video.poster : (images.length > 0 ? images[0].src : null)
-                            };
-                        }).filter(t => t !== null);
-                    }
-                    """)
-                except Exception as eval_error:
-                    print(f"[BOOKMARKS] ⚠️  执行 JavaScript 失败: {eval_error}")
-                    # 如果执行失败，等待一下再重试
-                    await asyncio.sleep(2)
-                    scroll_attempts += 1
-                    continue
-                
-                # 添加新推文
-                new_count = 0
-                for tweet in tweets:
-                    if tweet['id'] not in seen_ids and (tweet['hasVideo'] or tweet['hasImages']):
-                        seen_ids.add(tweet['id'])
-                        bookmarks.append(tweet)
-                        new_count += 1
-                
-                print(f"[BOOKMARKS] 本次提取到 {new_count} 条新书签")
-                
-                # 如果连续几次都没有新内容，提前退出
-                if new_count == 0:
-                    print("[BOOKMARKS] 没有新内容，可能已到底部")
-                    if scroll_attempts > 3:
-                        break
-                
-                # 滚动加载更多
-                await app_state.page.mouse.wheel(0, 2000)
-                await asyncio.sleep(2)
-                scroll_attempts += 1
-            
-            app_state.bookmarks = bookmarks[:limit]
             print(f"[BOOKMARKS] ✓ 成功获取 {len(app_state.bookmarks)} 条书签")
             return {"success": True, "bookmarks": app_state.bookmarks}
         
