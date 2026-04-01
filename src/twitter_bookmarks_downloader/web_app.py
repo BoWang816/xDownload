@@ -435,40 +435,76 @@ async def _download_task(task_id: str, tweet_ids: List[str], settings: Settings)
     history = load_history(settings.history_file)
     download_dir = settings.download_dir
     download_dir.mkdir(parents=True, exist_ok=True)
-
-    
-    ydl_opts = {
-        "outtmpl": str(download_dir / "%(uploader)s_%(upload_date)s_%(id)s.%(ext)s"),
-        "format": "bv*+ba/best",
-        "quiet": True,
-        "no_warnings": True,
-        "merge_output_format": "mp4",
-    }
     
     for idx, tweet_id in enumerate(tweet_ids, 1):
-        url = f"https://twitter.com/i/status/{tweet_id}"
-        print(f"[TASK-{task_id}] [{idx}/{len(tweet_ids)}] 下载: {url}")
+        print(f"[TASK-{task_id}] [{idx}/{len(tweet_ids)}] 处理推文: {tweet_id}")
         
         try:
-            with YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(url, download=True)
-                filename = ydl.prepare_filename(info)
+            # 从书签列表中查找视频 URL
+            bookmark = next((b for b in app_state.bookmarks if b['id'] == tweet_id), None)
+            
+            if bookmark and bookmark.get('videoUrl'):
+                # 直接下载视频 URL
+                video_url = bookmark['videoUrl']
+                print(f"[TASK-{task_id}] 使用直接链接下载")
+                
+                filename = f"{bookmark['author']}_{tweet_id}.mp4"
+                filepath = download_dir / filename
+                
+                async with httpx.AsyncClient() as client:
+                    response = await client.get(video_url, timeout=60.0)
+                    response.raise_for_status()
+                    
+                    with open(filepath, 'wb') as f:
+                        f.write(response.content)
                 
                 task["completed"] += 1
                 task["items"].append({
                     "tweet_id": tweet_id,
                     "status": "success",
-                    "filename": Path(filename).name
+                    "filename": filename
                 })
                 
-                print(f"[TASK-{task_id}] ✓ 下载成功: {Path(filename).name}")
+                print(f"[TASK-{task_id}] ✓ 下载成功: {filename}")
                 
                 # 更新历史记录
                 history[tweet_id] = {
-                    "url": url,
-                    "saved_file": filename,
+                    "url": f"https://twitter.com/i/status/{tweet_id}",
+                    "saved_file": str(filepath),
                     "downloaded_at": datetime.utcnow().isoformat() + "Z"
                 }
+            else:
+                # 回退到 yt-dlp
+                print(f"[TASK-{task_id}] 使用 yt-dlp 下载")
+                url = f"https://twitter.com/i/status/{tweet_id}"
+                
+                ydl_opts = {
+                    "outtmpl": str(download_dir / "%(uploader)s_%(upload_date)s_%(id)s.%(ext)s"),
+                    "format": "bv*+ba/best",
+                    "quiet": True,
+                    "no_warnings": True,
+                    "merge_output_format": "mp4",
+                }
+                
+                with YoutubeDL(ydl_opts) as ydl:
+                    info = ydl.extract_info(url, download=True)
+                    filename = ydl.prepare_filename(info)
+                    
+                    task["completed"] += 1
+                    task["items"].append({
+                        "tweet_id": tweet_id,
+                        "status": "success",
+                        "filename": Path(filename).name
+                    })
+                    
+                    print(f"[TASK-{task_id}] ✓ 下载成功: {Path(filename).name}")
+                    
+                    # 更新历史记录
+                    history[tweet_id] = {
+                        "url": url,
+                        "saved_file": filename,
+                        "downloaded_at": datetime.utcnow().isoformat() + "Z"
+                    }
         
         except Exception as e:
             task["failed"] += 1
